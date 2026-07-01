@@ -54,7 +54,11 @@ function readIfExists(path: string): string {
 }
 
 export function fileJobProvider(path: string): () => { jobs: Job[]; warnings: string[] } {
-  return () => parseJobsJson(readFileSync(path, "utf8"));
+  return () => {
+    const text = readIfExists(path);
+    if (text === "") return { jobs: [], warnings: [`registry file not found: ${path}`] };
+    return parseJobsJson(text);
+  };
 }
 export function fileEnabledProvider(path: string | null): () => Set<string> {
   return () => (path ? parseEnabledJson(readIfExists(path)) : new Set());
