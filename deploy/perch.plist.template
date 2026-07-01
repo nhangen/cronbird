@@ -1,0 +1,69 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  perch — macOS launchd USER agent template.
+
+  A single keep-alive agent runs the Bun daemon, which owns cron matching and
+  dispatches jobs via the shell command in your perch.config.json.
+
+  This is a TEMPLATE: replace every __PLACEHOLDER__ before installing.
+
+  REQUIRED before installing — create node_modules (the croner dependency):
+
+    ( cd __WORKDIR__ && bun install )
+
+  Install (user scope, logged-in GUI session required — this is a LaunchAgent,
+  not a headless LaunchDaemon):
+
+    cp perch.plist.template ~/Library/LaunchAgents/__LABEL__.plist
+    # edit the copy: replace all __PLACEHOLDER__ values
+    launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/__LABEL__.plist
+    launchctl kickstart -p gui/$(id -u)/__LABEL__
+
+  Stop / uninstall:
+    launchctl bootout gui/$(id -u)/__LABEL__
+    rm ~/Library/LaunchAgents/__LABEL__.plist
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>__LABEL__</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <!-- EDIT: absolute path to bun and to perch's src/cli/main.ts. -->
+    <string>__BUN__</string>
+    <string>run</string>
+    <string>__MAIN__</string>
+  </array>
+
+  <!-- EDIT: absolute path to the perch working directory (where node_modules lives). -->
+  <key>WorkingDirectory</key>
+  <string>__WORKDIR__</string>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <!-- REQUIRED: absolute path to your perch.config.json. -->
+    <key>PERCH_CONFIG</key>
+    <string>__CONFIG__</string>
+  </dict>
+
+  <!-- Start at load and keep alive, but only respawn on a non-zero (crash) exit
+       so a clean SIGTERM shutdown (exit 0) does not tight-loop. -->
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <dict>
+    <key>SuccessfulExit</key>
+    <false/>
+  </dict>
+
+  <!-- Floor between respawns (launchd's implicit minimum is ~10s). -->
+  <key>ThrottleInterval</key>
+  <integer>10</integer>
+
+  <key>StandardOutPath</key>
+  <string>/tmp/__LABEL__.out.log</string>
+  <key>StandardErrorPath</key>
+  <string>/tmp/__LABEL__.err.log</string>
+</dict>
+</plist>
