@@ -138,8 +138,20 @@ export async function runForever<T>(deps: DaemonDeps<T>): Promise<void> {
       dispatched_minute: Object.fromEntries(guard),
       last_fired: lastFired,
     });
-    for (const p of due) deps.dispatch(p.name);
-    for (const f of catches) deps.dispatch(f.job.name);
+    for (const p of due) {
+      try {
+        deps.dispatch(p.name);
+      } catch (err) {
+        deps.log(`dispatch failed for ${p.name}: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+    for (const f of catches) {
+      try {
+        deps.dispatch(f.job.name);
+      } catch (err) {
+        deps.log(`dispatch failed for ${f.job.name}: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
 
     await deps.sleep(wake);
   }

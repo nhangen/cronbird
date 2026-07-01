@@ -415,3 +415,26 @@ describe("scope gating wired from loaders (B4)", () => {
     expect(h.dispatched).toEqual(["ev"]);
   });
 });
+
+describe("dispatch error isolation", () => {
+  test("a throwing dispatch for one job does not kill the loop, the second job still fires, and the failure is logged", async () => {
+    const h = harness({
+      nows: [d("2026-06-01T09:00:00Z")],
+      playbooks: [
+        pb({ name: "boom", cronSchedule: "0 9 * * *" }),
+        pb({ name: "ok", cronSchedule: "0 9 * * *" }),
+      ],
+    });
+    // Replace dispatch with one that throws for the first job only.
+    let dispatchCalls = 0;
+    const origDispatch = h.deps.dispatch;
+    h.deps.dispatch = (name) => {
+      dispatchCalls++;
+      if (name === "boom") throw new Error("ENOENT: no such file");
+      origDispatch(name);
+    };
+    await expect(runForever(h.deps)).resolves.toBeUndefined();
+    expect(h.dispatched).toContain("ok");
+    expect(h.logs.some((l) => l.includes("boom") && l.includes("ENOENT"))).toBe(true);
+  });
+});
