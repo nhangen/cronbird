@@ -121,6 +121,42 @@ Set `syncedHeartbeatDir` to a directory shared across hosts (e.g. a synced vault
 
 ---
 
+## Status & inspection
+
+Read-only subcommands report what is scheduled, when jobs fire, and their health — reading the same config, registry, and heartbeat the daemon uses. They never dispatch or write.
+
+```bash
+cronbird list      <config.json>              # every job: schedule, scope, active, runnable-here
+cronbird next-runs <config.json> [--within 2h] # runnable jobs sorted by next fire (optional window)
+cronbird status    <config.json>              # per-job health + daemon heartbeat age
+```
+
+All three accept `--json` for machine-readable output. Running `cronbird <config.json>` with no subcommand starts the daemon as before.
+
+`status` classifies each job's `HEALTH`:
+
+| Health | Meaning |
+|---|---|
+| `inactive` | `isActive: false` — the daemon never fires it. |
+| `not-runnable` | Active, but not gated to this host (scope / enabled / owner). |
+| `never-fired` | Runnable, but the heartbeat records no prior fire. |
+| `ok` | Runnable, fired, no scheduled slot missed. |
+| `stale` | Runnable and fired, but a slot scheduled after the last fire is overdue past the grace window (`2 × maxSleepMs`) — the daemon likely missed it (outage / clock skew). |
+
+Example:
+
+```
+$ cronbird status ./cronbird.config.json
+host=ml-1  daemon: heartbeat <1m ago
+
+NAME          SCOPE   RUNNABLE  LAST FIRE  NEXT FIRE   HEALTH
+disabled-job  each    no        -          -           inactive
+hourly-ping   each    yes       1m ago     in 42m      ok
+morning-scan  single  yes       -          in 14h 42m  never-fired
+```
+
+The projection is built by `computeStatus` in `cronbird/core` (pure, clock-injected) — any consumer can render its own view over the same data.
+
 ## Deploy
 
 Templates for both macOS launchd and Linux/WSL systemd are in `deploy/`.
