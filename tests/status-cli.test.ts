@@ -163,6 +163,38 @@ describe("argument errors", () => {
     expect(err.join("")).toContain("usage");
   });
 
+  test("a missing registry surfaces a warning to stderr but still exits 0", () => {
+    const badRegDir = mkdtempSync(join(tmpdir(), "cronbird-status-badreg-"));
+    const badConfig = join(badRegDir, "config.json");
+    writeFileSync(
+      badConfig,
+      JSON.stringify({
+        hostname: "ml-1",
+        registryPath: join(badRegDir, "does-not-exist.json"),
+        enabledPath: null,
+        topologyPath: null,
+        heartbeatPath: join(badRegDir, "hb.json"),
+        syncedHeartbeatDir: null,
+        dispatchCommand: ["./run.sh"],
+        dispatchArgsTemplate: ["{job}"],
+        maxSleepMs: 60_000,
+        catchupLookbackFloorMs: 3_600_000,
+        catchupLookbackCapMs: 21_600_000,
+      }),
+    );
+    const out: string[] = [];
+    const err: string[] = [];
+    const code = runStatusCommand("list", [badConfig], {
+      now: () => NOW,
+      out: (s) => out.push(s),
+      err: (s) => err.push(s),
+      env: {},
+    });
+    rmSync(badRegDir, { recursive: true, force: true });
+    expect(code).toBe(0);
+    expect(err.join("")).toMatch(/warning:.*not found/i);
+  });
+
   test("config with a bad path → exit 1", () => {
     const out: string[] = [];
     const err: string[] = [];

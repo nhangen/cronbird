@@ -55,7 +55,11 @@ export function runStatusCommand(sub: StatusSubcommand, args: string[], deps: St
   let report: StatusReport;
   try {
     const cfg = parseConfig(readFileSync(configPath, "utf8"), deps.env);
-    const jobs = fileJobProvider(cfg.registryPath)().jobs;
+    const { jobs, warnings } = fileJobProvider(cfg.registryPath)();
+    // Surface registry parse warnings (missing file, corrupt JSON, skipped
+    // rows) — a status tool that prints an empty table on a broken registry
+    // is indistinguishable from "no jobs". Diagnostic, not fatal: still exit 0.
+    for (const w of warnings) deps.err(`warning: ${w}\n`);
     const enabled = fileEnabledProvider(cfg.enabledPath)();
     const topology = fileTopologyProvider(cfg.topologyPath)();
     const heartbeat = readHeartbeatFile(cfg.heartbeatPath);
