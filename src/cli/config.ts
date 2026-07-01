@@ -62,10 +62,10 @@ export function parseConfig(raw: string, env: Record<string, string | undefined>
   return {
     hostname,
     registryPath: expandTilde(reqString(o, "registryPath"), home),
-    enabledPath: optString(o, "enabledPath") ? expandTilde(o.enabledPath as string, home) : null,
-    topologyPath: optString(o, "topologyPath") ? expandTilde(o.topologyPath as string, home) : null,
+    enabledPath: (() => { const ep = optString(o, "enabledPath"); return ep ? expandTilde(ep, home) : null; })(),
+    topologyPath: (() => { const tp = optString(o, "topologyPath"); return tp ? expandTilde(tp, home) : null; })(),
     heartbeatPath: expandTilde(reqString(o, "heartbeatPath"), home),
-    syncedHeartbeatDir: optString(o, "syncedHeartbeatDir") ? expandTilde(o.syncedHeartbeatDir as string, home) : null,
+    syncedHeartbeatDir: (() => { const sd = optString(o, "syncedHeartbeatDir"); return sd ? expandTilde(sd, home) : null; })(),
     dispatchCommand: reqStringArray(o, "dispatchCommand"),
     dispatchArgsTemplate: reqStringArray(o, "dispatchArgsTemplate"),
     maxSleepMs: reqPosInt(o, "maxSleepMs"),

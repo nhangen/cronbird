@@ -32,7 +32,7 @@ All fields are required unless marked optional.
 | `heartbeatPath` | `string` | Path for the local heartbeat file (double-fire guard + catch-up state). |
 | `syncedHeartbeatDir` | `string \| null` | Directory for a synced per-host heartbeat copy (E2 offline-owner alert). `null` = no synced copy. |
 | `dispatchCommand` | `string[]` | Command to run for dispatch (no shell). Example: `["./scripts/run-job.sh"]`. |
-| `dispatchArgsTemplate` | `string[]` | Argv template appended after `dispatchCommand`. Use `"{job}"` as a placeholder for the job name. Example: `["{job}", "--scheduled"]`. |
+| `dispatchArgsTemplate` | `string[]` | Argv template appended after `dispatchCommand`. Use `"{job}"` as a placeholder for the job name. Example: `["{job}", "--scheduled"]`. `["{job}"]` is the minimal valid template — the array must be non-empty and must include `{job}`. |
 | `maxSleepMs` | `number` | Maximum sleep between ticks (ms). Default suggestion: `60000` (1 min). |
 | `catchupLookbackFloorMs` | `number` | Minimum lookback window for missed-slot catch-up (ms). Default suggestion: `3600000` (1 hour). |
 | `catchupLookbackCapMs` | `number` | Maximum lookback window (ms). Default suggestion: `21600000` (6 hours). |

@@ -29,7 +29,7 @@ WorkingDirectory=__WORKDIR__
 ExecStart=__BUN__ run __MAIN__
 # REQUIRED: absolute path to your perch.config.json.
 Environment=PERCH_CONFIG=__CONFIG__
-Restart=always
+Restart=on-failure
 RestartSec=10
 # Give SIGTERM time for the loop to finish its current tick and exit cleanly.
 TimeoutStopSec=70
