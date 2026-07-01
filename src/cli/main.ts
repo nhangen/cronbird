@@ -9,10 +9,10 @@ import { readHeartbeatFile, writeHeartbeatFile, writeSyncedHeartbeat, writeHeart
 function nowStamp(): string { return new Date().toISOString(); }
 
 async function main(): Promise<void> {
-  const configPath = process.argv[2] ?? process.env.PERCH_CONFIG;
-  if (!configPath) throw new Error("usage: perch <config.json> (or set PERCH_CONFIG)");
+  const configPath = process.argv[2] ?? process.env.CRONBIRD_CONFIG;
+  if (!configPath) throw new Error("usage: cronbird <config.json> (or set CRONBIRD_CONFIG)");
   const cfg = parseConfig(readFileSync(configPath, "utf8"), process.env);
-  const log = (m: string) => process.stderr.write(`[${nowStamp()}] perch: ${m}\n`);
+  const log = (m: string) => process.stderr.write(`[${nowStamp()}] cronbird: ${m}\n`);
 
   let running = true;
   let wakeEarly: (() => void) | null = null;
@@ -54,6 +54,6 @@ async function main(): Promise<void> {
 }
 
 main().catch((err) => {
-  process.stderr.write(`[${nowStamp()}] perch: fatal: ${err instanceof Error ? err.message : String(err)}\n`);
+  process.stderr.write(`[${nowStamp()}] cronbird: fatal: ${err instanceof Error ? err.message : String(err)}\n`);
   process.exit(1);
 });

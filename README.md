@@ -1,9 +1,9 @@
-# perch
+# cronbird
 
 A host-aware cron scheduler daemon. Matches 5-field cron schedules, decides which jobs are due on this host, replays the newest missed slot after an outage, and guarantees at-most-once dispatch via a persisted double-fire guard.
 
-- `perch/core` — the engine (zero deps beyond croner).
-- `perch/cli` — a generic file-config runner: point it at a registry JSON + a dispatch command and run it under launchd/systemd, no code required.
+- `cronbird/core` — the engine (zero deps beyond croner).
+- `cronbird/cli` — a generic file-config runner: point it at a registry JSON + a dispatch command and run it under launchd/systemd, no code required.
 
 ---
 
@@ -19,7 +19,7 @@ A host-aware cron scheduler daemon. Matches 5-field cron schedules, decides whic
 
 ---
 
-## `perch.config.json` field reference
+## `cronbird.config.json` field reference
 
 All fields are required unless marked optional.
 
@@ -68,15 +68,15 @@ Fields:
 - `scope` — `"single"` (one host dispatches) or `"each"` (all matching hosts dispatch).
 - `metadata` — arbitrary data passed through to the dispatch env.
 
-### 2. Write a config (`perch.config.json`)
+### 2. Write a config (`cronbird.config.json`)
 
 ```json
 {
   "hostname": "auto",
-  "registryPath": "~/.perch/registry.json",
+  "registryPath": "~/.cronbird/registry.json",
   "enabledPath": null,
   "topologyPath": null,
-  "heartbeatPath": "~/.perch/heartbeat.json",
+  "heartbeatPath": "~/.cronbird/heartbeat.json",
   "syncedHeartbeatDir": null,
   "dispatchCommand": ["./scripts/run-job.sh"],
   "dispatchArgsTemplate": ["{job}", "--scheduled"],
@@ -89,8 +89,8 @@ Fields:
 ### 3. Run
 
 ```bash
-bun run src/cli/main.ts perch.config.json
-# or: PERCH_CONFIG=perch.config.json bun run src/cli/main.ts
+bun run src/cli/main.ts cronbird.config.json
+# or: CRONBIRD_CONFIG=cronbird.config.json bun run src/cli/main.ts
 ```
 
 ---
@@ -128,11 +128,11 @@ Templates for both macOS launchd and Linux/WSL systemd are in `deploy/`.
 ### macOS (launchd)
 
 ```bash
-( cd /path/to/perch && bun install )   # install croner dependency
-cp deploy/perch.plist.template ~/Library/LaunchAgents/com.example.perch.plist
+( cd /path/to/cronbird && bun install )   # install croner dependency
+cp deploy/cronbird.plist.template ~/Library/LaunchAgents/com.example.cronbird.plist
 # edit: replace __LABEL__, __BUN__, __MAIN__, __WORKDIR__, __CONFIG__
-launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.example.perch.plist
-launchctl kickstart -p gui/$(id -u)/com.example.perch
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.example.cronbird.plist
+launchctl kickstart -p gui/$(id -u)/com.example.cronbird
 ```
 
 Logs: `/tmp/__LABEL__.out.log` and `/tmp/__LABEL__.err.log`.
@@ -140,14 +140,14 @@ Logs: `/tmp/__LABEL__.out.log` and `/tmp/__LABEL__.err.log`.
 ### Linux / WSL (systemd)
 
 ```bash
-( cd /path/to/perch && bun install )   # install croner dependency
+( cd /path/to/cronbird && bun install )   # install croner dependency
 mkdir -p ~/.config/systemd/user
-cp deploy/perch.service.template ~/.config/systemd/user/perch.service
+cp deploy/cronbird.service.template ~/.config/systemd/user/cronbird.service
 # edit: replace __LABEL__, __BUN__, __MAIN__, __WORKDIR__, __CONFIG__
 systemctl --user daemon-reload
-systemctl --user enable --now perch.service
+systemctl --user enable --now cronbird.service
 loginctl enable-linger "$USER"         # keep running when logged out
-journalctl --user -u perch -f
+journalctl --user -u cronbird -f
 ```
 
 Both templates keep the daemon alive on crash (non-zero exit) but allow a clean SIGTERM shutdown without respawning.

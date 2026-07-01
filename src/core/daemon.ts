@@ -1,5 +1,5 @@
 /**
- * The perch scheduler control loop.
+ * The cronbird scheduler control loop.
  *
  * Every tick: re-read the job registry, pick the jobs this host runs now, fire
  * each due one via the injected `dispatch` (a non-blocking spawn of the

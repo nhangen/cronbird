@@ -1,5 +1,5 @@
 /**
- * Missed-slot catch-up for the perch daemon.
+ * Missed-slot catch-up for the cronbird daemon.
  *
  * When the daemon was down or a sleep overshot (suspend), schedules that should
  * have fired during the gap were skipped — the live loop only fires the current

@@ -2,7 +2,7 @@ import { hostname as osHostname } from "node:os";
 
 export class ConfigError extends Error {}
 
-export interface PerchConfig {
+export interface CronbirdConfig {
   hostname: string;
   registryPath: string;
   enabledPath: string | null;
@@ -49,7 +49,7 @@ function reqPosInt(o: Record<string, unknown>, k: string): number {
   return v;
 }
 
-export function parseConfig(raw: string, env: Record<string, string | undefined>): PerchConfig {
+export function parseConfig(raw: string, env: Record<string, string | undefined>): CronbirdConfig {
   let o: Record<string, unknown>;
   try {
     o = JSON.parse(raw) as Record<string, unknown>;

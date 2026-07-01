@@ -1,11 +1,11 @@
-# perch — systemd USER unit template (Linux/WSL keep-alive).
+# cronbird — systemd USER unit template (Linux/WSL keep-alive).
 #
 # This is a TEMPLATE: replace every __PLACEHOLDER__ before installing.
 #
 # Install (user scope, no root):
 #   ( cd __WORKDIR__ && bun install )  # REQUIRED: creates node_modules (croner)
 #   mkdir -p ~/.config/systemd/user
-#   cp perch.service.template ~/.config/systemd/user/__LABEL__.service
+#   cp cronbird.service.template ~/.config/systemd/user/__LABEL__.service
 #   # edit the copy: replace all __PLACEHOLDER__ values
 #   systemctl --user daemon-reload
 #   systemctl --user enable --now __LABEL__.service
@@ -14,7 +14,7 @@
 #   journalctl --user -u __LABEL__ -f
 
 [Unit]
-Description=perch job scheduler daemon
+Description=cronbird job scheduler daemon
 After=network-online.target
 Wants=network-online.target
 # Cap respawn storms: at most 10 restarts per 5 min, then stop and surface it.
@@ -23,12 +23,12 @@ StartLimitBurst=10
 
 [Service]
 Type=simple
-# EDIT: absolute path to the perch working directory (where node_modules lives).
+# EDIT: absolute path to the cronbird working directory (where node_modules lives).
 WorkingDirectory=__WORKDIR__
-# EDIT: absolute path to bun and to perch's src/cli/main.ts.
+# EDIT: absolute path to bun and to cronbird's src/cli/main.ts.
 ExecStart=__BUN__ run __MAIN__
-# REQUIRED: absolute path to your perch.config.json.
-Environment=PERCH_CONFIG=__CONFIG__
+# REQUIRED: absolute path to your cronbird.config.json.
+Environment=CRONBIRD_CONFIG=__CONFIG__
 Restart=on-failure
 RestartSec=10
 # Give SIGTERM time for the loop to finish its current tick and exit cleanly.

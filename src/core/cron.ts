@@ -1,7 +1,7 @@
 import { Cron } from "croner";
 
 /**
- * Cron next-fire matcher for the perch scheduler daemon.
+ * Cron next-fire matcher for the cronbird scheduler daemon.
  *
  * The daemon reads 5-field cron schedules from jobs, asks this module
  * for the next fire instant, and sleeps until then. The croner dependency is

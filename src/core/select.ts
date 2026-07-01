@@ -1,5 +1,5 @@
 /**
- * Pure scheduling decisions for the perch daemon.
+ * Pure scheduling decisions for the cronbird daemon.
  *
  * These functions hold no clock, filesystem, or process state — the daemon loop
  * injects `now` and a {@link CronMatcher}. That keeps the scheduling logic

@@ -26,7 +26,7 @@ describe("providers", () => {
   });
 
   test("fileJobProvider fails safe on missing registry file — returns empty jobs + warning", () => {
-    const missingPath = join(tmpdir(), `perch-no-such-registry-${Date.now()}.json`);
+    const missingPath = join(tmpdir(), `cronbird-no-such-registry-${Date.now()}.json`);
     const provider = fileJobProvider(missingPath);
     let result: ReturnType<typeof provider>;
     expect(() => { result = provider(); }).not.toThrow();

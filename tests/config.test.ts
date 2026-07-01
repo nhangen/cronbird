@@ -27,7 +27,7 @@ describe("parseConfig", () => {
   });
 
   test("~-prefixed paths expand against env.HOME", () => {
-    const c = parseConfig(JSON.stringify({ ...base, hostname: "ml-1", registryPath: "~/.perch/r.json" }), { HOME: "/home/x" });
-    expect(c.registryPath).toBe("/home/x/.perch/r.json");
+    const c = parseConfig(JSON.stringify({ ...base, hostname: "ml-1", registryPath: "~/.cronbird/r.json" }), { HOME: "/home/x" });
+    expect(c.registryPath).toBe("/home/x/.cronbird/r.json");
   });
 });

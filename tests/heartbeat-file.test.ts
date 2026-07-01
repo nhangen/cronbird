@@ -10,7 +10,7 @@ import {
   writeSyncedHeartbeat,
 } from "../src/cli/heartbeat-file";
 
-const dir = mkdtempSync(join(tmpdir(), "perch-hb-"));
+const dir = mkdtempSync(join(tmpdir(), "cronbird-hb-"));
 afterAll(() => rmSync(dir, { recursive: true, force: true }));
 
 const hb: Heartbeat = {
