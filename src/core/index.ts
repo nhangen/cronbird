@@ -1,6 +1,6 @@
 export type { Job, Topology, Heartbeat, DispatchRecord } from "./types";
 export { createMatcher } from "./cron";
-export type { CronMatcher } from "./cron";
+export type { CronMatcher, MatcherOptions } from "./cron";
 export { selectRunnable, dueAt, nextWake } from "./select";
 export { catchUpFires, lookbackForSchedule } from "./catchup";
 export { runForever } from "./daemon";
