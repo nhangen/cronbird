@@ -5,10 +5,25 @@ import { parseConfig } from "./config";
 import { fileJobProvider, fileEnabledProvider, fileTopologyProvider } from "./providers";
 import { ShellDispatcher } from "./shell-dispatcher";
 import { readHeartbeatFile, writeHeartbeatFile, writeSyncedHeartbeat, writeHeartbeatWithSync } from "./heartbeat-file";
+import { runStatusCommand, STATUS_SUBCOMMANDS, type StatusSubcommand } from "./status";
 
 function nowStamp(): string { return new Date().toISOString(); }
 
 async function main(): Promise<void> {
+  // Read-only subcommands (status/list/next-runs) route before the daemon.
+  // With no subcommand, argv[2] is the config path and the daemon runs — the
+  // launchd/systemd entrypoint (`cronbird <config>`) is unchanged.
+  const sub = process.argv[2];
+  if (sub && STATUS_SUBCOMMANDS.has(sub)) {
+    const code = runStatusCommand(sub as StatusSubcommand, process.argv.slice(3), {
+      now: () => new Date(),
+      out: (s) => process.stdout.write(s),
+      err: (s) => process.stderr.write(s),
+      env: process.env,
+    });
+    process.exit(code);
+  }
+
   const configPath = process.argv[2] ?? process.env.CRONBIRD_CONFIG;
   if (!configPath) throw new Error("usage: cronbird <config.json> (or set CRONBIRD_CONFIG)");
   const cfg = parseConfig(readFileSync(configPath, "utf8"), process.env);
