@@ -6,3 +6,4 @@ export { fileJobProvider, fileEnabledProvider, fileTopologyProvider, parseJobsJs
 export { readHeartbeatFile, writeHeartbeatFile, writeSyncedHeartbeat, writeHeartbeatWithSync } from "./heartbeat-file";
 export { runStatusCommand, STATUS_SUBCOMMANDS } from "./status";
 export type { StatusSubcommand, StatusCliDeps } from "./status";
+export { usageText, HELP_TOKENS } from "./usage";

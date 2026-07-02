@@ -6,14 +6,29 @@ import { fileJobProvider, fileEnabledProvider, fileTopologyProvider } from "./pr
 import { ShellDispatcher } from "./shell-dispatcher";
 import { readHeartbeatFile, writeHeartbeatFile, writeSyncedHeartbeat, writeHeartbeatWithSync } from "./heartbeat-file";
 import { runStatusCommand, STATUS_SUBCOMMANDS, type StatusSubcommand } from "./status";
+import { HELP_TOKENS, usageText } from "./usage";
 
 function nowStamp(): string { return new Date().toISOString(); }
 
 async function main(): Promise<void> {
+  const first = process.argv[2];
+
+  // `help` / `--help` / `-h` → usage on stdout, exit 0.
+  if (first !== undefined && HELP_TOKENS.has(first)) {
+    process.stdout.write(usageText());
+    process.exit(0);
+  }
+  // No args → the binary is self-describing: usage on stderr, exit 2. (A
+  // config path as argv[2] still runs the daemon below — unchanged.)
+  if (first === undefined) {
+    process.stderr.write(usageText());
+    process.exit(2);
+  }
+
   // Read-only subcommands (status/list/next-runs) route before the daemon.
   // With no subcommand, argv[2] is the config path and the daemon runs — the
   // launchd/systemd entrypoint (`cronbird <config>`) is unchanged.
-  const sub = process.argv[2];
+  const sub = first;
   if (sub && STATUS_SUBCOMMANDS.has(sub)) {
     const code = runStatusCommand(sub as StatusSubcommand, process.argv.slice(3), {
       now: () => new Date(),
