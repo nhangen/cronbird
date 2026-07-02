@@ -131,7 +131,7 @@ cronbird next-runs <config.json> [--within 2h] # runnable jobs sorted by next fi
 cronbird status    <config.json>              # per-job health + daemon heartbeat age
 ```
 
-All three accept `--json` for machine-readable output. Running `cronbird <config.json>` with no subcommand starts the daemon as before.
+All three accept `--json` for machine-readable output. `cronbird help` (or `--help` / `-h`) prints this list; running `cronbird <config.json>` with no subcommand starts the daemon as before.
 
 `status` classifies each job's `HEALTH`:
 
