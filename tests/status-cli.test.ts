@@ -74,8 +74,9 @@ describe("list", () => {
     expect(out).toContain("alpha");
     expect(out).toContain("bravo");
     expect(out).toContain("off");
-    // inactive job shows not runnable
-    expect(/off\b.*\bno\b/i.test(out) || /off\b.*false/i.test(out)).toBe(true);
+    // inactive job's ACTIVE + RUNNABLE columns are both "no" (last two tokens)
+    const offLine = out.split("\n").find((l) => l.startsWith("off"))!;
+    expect(offLine.trim().split(/\s+/).slice(-2)).toEqual(["no", "no"]);
   });
 
   test("--json emits a parseable jobs array", () => {
@@ -139,6 +140,157 @@ describe("status", () => {
     expect(parsed.host).toBe("ml-1");
     expect(parsed.heartbeatAgeMs).toBe(20_000);
     expect(parsed.jobs.find((j: { name: string }) => j.name === "alpha").health).toBe("ok");
+  });
+});
+
+// Fixtures built per-test so we can vary maxSleepMs, corrupt sidecars, etc.
+function runWith(
+  opts: {
+    registry?: unknown | string;
+    enabled?: unknown;
+    topology?: unknown | string | null;
+    heartbeat?: string; // omit → no heartbeat file written
+    maxSleepMs?: number;
+  },
+  sub: "status" | "list" | "next-runs",
+  args: string[] = [],
+) {
+  const d = mkdtempSync(join(tmpdir(), "cronbird-status-w-"));
+  const reg = join(d, "registry.json");
+  writeFileSync(reg, typeof opts.registry === "string" ? opts.registry : JSON.stringify(opts.registry ?? { jobs: [] }));
+  const en = join(d, "enabled.json");
+  writeFileSync(en, JSON.stringify(opts.enabled ?? []));
+  let tp: string | null = null;
+  if (opts.topology !== undefined) {
+    tp = join(d, "topology.json");
+    writeFileSync(tp, typeof opts.topology === "string" ? opts.topology : JSON.stringify(opts.topology));
+  }
+  const hbp = join(d, "hb.json");
+  if (opts.heartbeat !== undefined) writeFileSync(hbp, opts.heartbeat);
+  const cfg = join(d, "config.json");
+  writeFileSync(
+    cfg,
+    JSON.stringify({
+      hostname: "ml-1",
+      registryPath: reg,
+      enabledPath: en,
+      topologyPath: tp,
+      heartbeatPath: hbp,
+      syncedHeartbeatDir: null,
+      dispatchCommand: ["./run.sh"],
+      dispatchArgsTemplate: ["{job}"],
+      maxSleepMs: opts.maxSleepMs ?? 60_000,
+      catchupLookbackFloorMs: 3_600_000,
+      catchupLookbackCapMs: 21_600_000,
+    }),
+  );
+  const out: string[] = [];
+  const err: string[] = [];
+  const code = runStatusCommand(sub, [cfg, ...args], { now: () => NOW, out: (s) => out.push(s), err: (s) => err.push(s), env: {} });
+  rmSync(d, { recursive: true, force: true });
+  return { code, out: out.join(""), err: err.join("") };
+}
+
+const everyMinute = (name: string) => ({
+  name,
+  cronSchedule: "* * * * *",
+  isActive: true,
+  hosts: ["*"],
+  scope: "each",
+  metadata: {},
+});
+
+describe("stale-grace wiring (staleGraceMs = 2 * maxSleepMs)", () => {
+  // maxSleepMs 60s → grace 120s. Both jobs fire every minute; the next slot
+  // after a fire is the following :00 boundary.
+  // near: fired 90s ago (11:58:30) → next slot 11:59:00 = 60s overdue (< 120s grace) → ok.
+  // past: fired 300s ago (11:55:00) → next slot 11:56:00 = 240s overdue (> 120s grace) → stale.
+  const heartbeat = JSON.stringify({
+    ts: NOW_MS - 10_000,
+    host: "ml-1",
+    dispatched_minute: {},
+    last_fired: { near: NOW_MS - 90_000, past: NOW_MS - 300_000 },
+  });
+  const registry = { jobs: [everyMinute("near"), everyMinute("past")] };
+  const enabled = ["near", "past"];
+
+  test("overdue within 2x grace → ok; overdue past 2x grace → stale (pins the doubling)", () => {
+    const { code, out } = runWith({ registry, enabled, heartbeat, maxSleepMs: 60_000 }, "status", ["--json"]);
+    expect(code).toBe(0);
+    const jobs = JSON.parse(out).jobs as { name: string; health: string }[];
+    expect(jobs.find((j) => j.name === "near")!.health).toBe("ok");
+    expect(jobs.find((j) => j.name === "past")!.health).toBe("stale");
+  });
+});
+
+describe("next-runs edge cases", () => {
+  test("runnable job with an invalid schedule is excluded from next-runs but present in list/status", () => {
+    const registry = {
+      jobs: [
+        { name: "good", cronSchedule: "0 * * * *", isActive: true, hosts: ["*"], scope: "each", metadata: {} },
+        { name: "bad", cronSchedule: "nope", isActive: true, hosts: ["*"], scope: "each", metadata: {} },
+      ],
+    };
+    const enabled = ["good", "bad"];
+    const nr = runWith({ registry, enabled }, "next-runs", []);
+    expect(nr.code).toBe(0);
+    expect(nr.out).toContain("good");
+    expect(nr.out).not.toContain("bad"); // nextFire null → excluded
+    const ls = runWith({ registry, enabled }, "list", []);
+    expect(ls.out).toContain("bad"); // but still listed
+    const st = runWith({ registry, enabled }, "status", ["--json"]);
+    expect(JSON.parse(st.out).jobs.find((j: { name: string }) => j.name === "bad").health).toBe("invalid-schedule");
+  });
+
+  test("--within cutoff is inclusive (<=): a job firing exactly at now+window is included", () => {
+    // every-minute job next fires at 12:01:00Z = NOW + 60s; --within 1m cutoff = NOW + 60s.
+    const { code, out } = runWith({ registry: { jobs: [everyMinute("tick")] }, enabled: ["tick"] }, "next-runs", ["--within", "1m"]);
+    expect(code).toBe(0);
+    expect(out).toContain("tick");
+  });
+
+  test("--within 0 excludes everything (empty window)", () => {
+    const { code, out } = runWith({ registry: { jobs: [everyMinute("tick")] }, enabled: ["tick"] }, "next-runs", ["--within", "0h"]);
+    expect(code).toBe(0);
+    expect(out).toContain("no upcoming runs");
+  });
+
+  test("--within as the last arg with no value → exit 2", () => {
+    const { code, err } = runWith({ registry: { jobs: [everyMinute("tick")] }, enabled: ["tick"] }, "next-runs", ["--within"]);
+    expect(code).toBe(2);
+    expect(err).toContain("--within");
+  });
+});
+
+describe("corrupt sidecar warnings (present-but-unparseable → stderr, still exit 0)", () => {
+  test("corrupt heartbeat file warns and exits 0", () => {
+    const { code, err } = runWith({ heartbeat: "{ not json" }, "status", []);
+    expect(code).toBe(0);
+    expect(err).toMatch(/heartbeat file present but unparseable/i);
+  });
+
+  test("corrupt topology file warns and exits 0", () => {
+    const { code, err } = runWith({ topology: "{ not json" }, "status", []);
+    expect(code).toBe(0);
+    expect(err).toMatch(/topology file present but unparseable/i);
+  });
+
+  test("absent heartbeat (never run) does NOT warn", () => {
+    const { code, err } = runWith({ /* no heartbeat file */ }, "status", []);
+    expect(code).toBe(0);
+    expect(err).not.toMatch(/unparseable/i);
+  });
+
+  test("corrupt (non-JSON) registry surfaces a parse warning, exit 0", () => {
+    const { code, err } = runWith({ registry: "{ not json" }, "list", []);
+    expect(code).toBe(0);
+    expect(err).toMatch(/warning:.*not valid JSON/i);
+  });
+
+  test("registry with a non-array jobs field surfaces a warning, exit 0", () => {
+    const { code, err } = runWith({ registry: '{"jobs":"x"}' }, "list", []);
+    expect(code).toBe(0);
+    expect(err).toMatch(/warning:.*not an array/i);
   });
 });
 

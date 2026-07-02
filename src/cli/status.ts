@@ -4,7 +4,7 @@
  * enabled / topology / heartbeat via the existing file providers, and renders a
  * projection of {@link computeStatus}. No scheduling, no writes.
  */
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { computeStatus, createMatcher, type JobStatus, type StatusReport } from "../core/index";
 import { parseConfig } from "./config";
 import { readHeartbeatFile } from "./heartbeat-file";
@@ -61,8 +61,19 @@ export function runStatusCommand(sub: StatusSubcommand, args: string[], deps: St
     // is indistinguishable from "no jobs". Diagnostic, not fatal: still exit 0.
     for (const w of warnings) deps.err(`warning: ${w}\n`);
     const enabled = fileEnabledProvider(cfg.enabledPath)();
+    // A sidecar that exists but reads as null/absent is corrupt — warn rather
+    // than silently rendering it as "not-runnable" / "no heartbeat", which
+    // would masquerade as a different (daemon) problem. Same rationale as the
+    // registry warnings above; the enabled-set corruption case (empty-set is
+    // ambiguous with a valid empty list) is tracked separately as a follow-up.
     const topology = fileTopologyProvider(cfg.topologyPath)();
+    if (cfg.topologyPath && topology === null && existsSync(cfg.topologyPath)) {
+      deps.err(`warning: topology file present but unparseable: ${cfg.topologyPath}\n`);
+    }
     const heartbeat = readHeartbeatFile(cfg.heartbeatPath);
+    if (heartbeat === null && existsSync(cfg.heartbeatPath)) {
+      deps.err(`warning: heartbeat file present but unparseable: ${cfg.heartbeatPath}\n`);
+    }
     report = computeStatus({
       jobs,
       host: cfg.hostname,
