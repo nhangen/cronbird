@@ -160,7 +160,7 @@ describe("computeStatus report shape", () => {
     expect(r.jobs.map((j) => j.name)).toEqual(["alpha", "bravo", "charlie"]);
   });
 
-  test("invalid cron schedule on a runnable job → nextFire null, does not throw", () => {
+  test("invalid cron schedule on a runnable job → nextFire null, health invalid-schedule, does not throw", () => {
     const r = computeStatus({
       ...base,
       jobs: [job({ name: "bad", cronSchedule: "not a cron" })],
@@ -169,7 +169,31 @@ describe("computeStatus report shape", () => {
       heartbeat: hb({}),
     });
     expect(r.jobs[0]!.nextFire).toBeNull();
-    // never fired, invalid schedule → still classified never-fired (not crash)
-    expect(r.jobs[0]!.health).toBe("never-fired");
+    // never fired + unparseable schedule → invalid-schedule dominates never-fired
+    expect(r.jobs[0]!.health).toBe("invalid-schedule");
+  });
+
+  test("invalid schedule on a job that previously fired → invalid-schedule (not ok)", () => {
+    const r = computeStatus({
+      ...base,
+      jobs: [job({ name: "bad", cronSchedule: "not a cron" })],
+      enabled: new Set(["bad"]),
+      owners: {},
+      // has a recorded fire — must NOT be laundered into "ok" (the reviewed bug)
+      heartbeat: hb({ bad: NOW_MS - 3_600_000 }),
+    });
+    expect(r.jobs[0]!.nextFire).toBeNull();
+    expect(r.jobs[0]!.health).toBe("invalid-schedule");
+  });
+
+  test("an inactive job with an invalid schedule is still inactive (inactive dominates)", () => {
+    const r = computeStatus({
+      ...base,
+      jobs: [job({ name: "bad", cronSchedule: "not a cron", isActive: false })],
+      enabled: new Set(["bad"]),
+      owners: {},
+      heartbeat: hb({}),
+    });
+    expect(r.jobs[0]!.health).toBe("inactive");
   });
 });

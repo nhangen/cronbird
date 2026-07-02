@@ -139,7 +139,8 @@ All three accept `--json` for machine-readable output. Running `cronbird <config
 |---|---|
 | `inactive` | `isActive: false` — the daemon never fires it. |
 | `not-runnable` | Active, but not gated to this host (scope / enabled / owner). |
-| `never-fired` | Runnable, but the heartbeat records no prior fire. |
+| `invalid-schedule` | Runnable, but the `cronSchedule` cannot be parsed — the daemon can never fire it. Dominates fire history. |
+| `never-fired` | Runnable, valid schedule, but the heartbeat records no prior fire. |
 | `ok` | Runnable, fired, no scheduled slot missed. |
 | `stale` | Runnable and fired, but a slot scheduled after the last fire is overdue past the grace window (`2 × maxSleepMs`) — the daemon likely missed it (outage / clock skew). |
 

@@ -16,7 +16,10 @@ export type JobHealth =
   | "inactive"
   /** Active, but not gated to this host (scope/enabled/owner). */
   | "not-runnable"
-  /** Runnable, but the heartbeat records no prior fire. */
+  /** Runnable, but the `cronSchedule` cannot be parsed — the daemon can never
+   *  fire it. Dominates fire history: a broken schedule is the headline. */
+  | "invalid-schedule"
+  /** Runnable, valid schedule, but the heartbeat records no prior fire. */
   | "never-fired"
   /** Runnable, fired, and no scheduled slot has been missed past the grace. */
   | "ok"
@@ -122,15 +125,18 @@ function deriveHealth<T>(
 ): JobHealth {
   if (!job.isActive) return "inactive";
   if (!runnable) return "not-runnable";
-  if (lastFired === null) return "never-fired";
+  // An unparseable schedule is the headline regardless of fire history — it
+  // never fires, so it's neither "ok" nor "stale". Checked before never-fired.
   try {
-    // The first scheduled slot strictly after the last fire. If that slot is
-    // already overdue past the grace window, a fire was missed.
-    const dueAfterLast = matcher.nextFire(job.cronSchedule, new Date(lastFired));
-    if (dueAfterLast !== null && dueAfterLast.getTime() <= nowMs - staleGraceMs) return "stale";
+    matcher.nextFire(job.cronSchedule, new Date(nowMs));
   } catch {
-    // Invalid schedule: it fired before (lastFired set) but can't be projected
-    // now — don't claim staleness we can't compute.
+    return "invalid-schedule";
   }
+  if (lastFired === null) return "never-fired";
+  // The schedule parsed above, so this call cannot throw.
+  // The first scheduled slot strictly after the last fire; if it is already
+  // overdue past the grace window, a fire was missed.
+  const dueAfterLast = matcher.nextFire(job.cronSchedule, new Date(lastFired));
+  if (dueAfterLast !== null && dueAfterLast.getTime() <= nowMs - staleGraceMs) return "stale";
   return "ok";
 }
