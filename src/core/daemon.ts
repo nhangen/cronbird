@@ -320,6 +320,18 @@ export function runOneTick<T>(deps: DaemonDeps<T>, state: TickState<T>): number 
       .snapshot()
       .find((e) => isEligible(e.name, upstreamsOf(e.name), state.lastSuccess, state.lastRun));
     if (candidate === undefined) break;
+    // Evict a slot older than its schedule's catch-up look-back: don't run a
+    // stale 3am slot at noon. Retry re-enqueues carry no slotTsByName entry, so
+    // they default to `now` and are never stale. Eviction removes and continues,
+    // so it never wedges the chain — the next eligible entry is picked.
+    const slotTs = state.slotTsByName[candidate.name] ?? now.getTime();
+    const schedule = jobByName.get(candidate.name)?.cronSchedule ?? "";
+    if (now.getTime() - slotTs > deps.resolveLookback(schedule, now)) {
+      state.queue.remove(candidate.name);
+      delete state.slotTsByName[candidate.name];
+      deps.log(`evicted stale slot ${candidate.name} (age ${now.getTime() - slotTs}ms)`);
+      continue;
+    }
     state.queue.remove(candidate.name);
     delete state.slotTsByName[candidate.name];
     state.lastRun[candidate.name] = now.getTime();

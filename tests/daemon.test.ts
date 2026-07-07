@@ -752,3 +752,37 @@ describe("dependency cycle/unknown-edge rejection at load — Task D", () => {
     expect(h.logs.some((l) => l.includes("unknown job ghost"))).toBe(true);
   });
 });
+
+describe("staleness eviction — Task E", () => {
+  test("a queued slot older than the lookback is evicted, not dispatched", async () => {
+    const now = d("2026-07-07T09:10:00Z");
+    const staleTs = d("2026-07-07T09:00:00Z").getTime(); // 10 min ago
+    const hb = h0Heartbeat({ queue: [{ name: "stale", priority: 1, slotTs: staleTs }] });
+    const h = harness({
+      nows: [now],
+      playbooks: [pb({ name: "stale", cronSchedule: "0 10 * * *" })], // off-tick: only the restored slot is queued
+      startHeartbeat: hb,
+      lookback: 60_000, // 1 min window → the 10-min-old slot is stale
+      readCompletions: () => ({ running: {}, done: {} }),
+    });
+    await runForever(h.deps);
+    expect(h.dispatched).toEqual([]);
+    expect(h.logs.some((l) => l.includes("evicted stale") && l.includes("stale"))).toBe(true);
+    expect((h.heartbeats.at(-1)!.queue ?? []).some((e) => e.name === "stale")).toBe(false);
+  });
+
+  test("a fresh queued slot within the lookback still dispatches", async () => {
+    const now = d("2026-07-07T09:10:00Z");
+    const freshTs = d("2026-07-07T09:09:30Z").getTime(); // 30s ago
+    const hb = h0Heartbeat({ queue: [{ name: "fresh", priority: 1, slotTs: freshTs }] });
+    const h = harness({
+      nows: [now],
+      playbooks: [pb({ name: "fresh", cronSchedule: "0 10 * * *" })],
+      startHeartbeat: hb,
+      lookback: 60_000,
+      readCompletions: () => ({ running: {}, done: {} }),
+    });
+    await runForever(h.deps);
+    expect(h.dispatched).toEqual(["fresh"]);
+  });
+});
