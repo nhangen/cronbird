@@ -12,7 +12,7 @@
  * `Restart=always` crash inside a fire-minute does not re-run a job.
  */
 import { catchUpFires } from "./catchup";
-import { MAX_ATTEMPTS, MAX_CONCURRENT } from "./constants";
+import { FATAL_EXIT_CODE, MAX_ATTEMPTS, MAX_CONCURRENT } from "./constants";
 import type { CronMatcher } from "./cron";
 import { failedJobs, isEligible, transitiveUpstreamFailed } from "./dependencies";
 import { RunQueue } from "./run-queue";
@@ -136,7 +136,13 @@ export async function runForever<T>(deps: DaemonDeps<T>): Promise<void> {
     attempts: prior ? { ...prior.attempts } : {},
     lastRun: prior ? { ...prior.last_run } : {},
     lastSuccess: prior ? { ...prior.last_success } : {},
-    processedCompletionTs: {},
+    // Seed from the persisted last_completed: the restored attempts/lastSuccess
+    // already account for those completions, so re-reading the same done/ files
+    // on restart must NOT re-count them. Only a completion newer than what the
+    // heartbeat recorded is fresh.
+    processedCompletionTs: prior
+      ? Object.fromEntries(Object.entries(prior.last_completed).map(([n, r]) => [n, r.ts]))
+      : {},
   };
 
   while (deps.shouldContinue()) {
@@ -192,8 +198,34 @@ export function runOneTick<T>(deps: DaemonDeps<T>, state: TickState<T>): number 
   // treated as first-seen and never replayed: at-most-once over double-fire.
   const nextLastFired: Record<string, number> = {};
   for (const p of runnable) nextLastFired[p.name] = state.lastFired[p.name] ?? now.getTime();
-  // Read run state once per tick: drives the cooldown gate (below) and the drain.
+  // Read run state once per tick: drives completion processing, the cooldown
+  // gate (below), and the drain.
   const completions = deps.readCompletions();
+
+  // Process fresh completions (done.ts newer than what we've accounted for):
+  // a success resets the retry counter and stamps last_success; a failure
+  // consumes an attempt and re-enqueues at the back of the line, until the
+  // MAX_ATTEMPTS-th failure marks the job failed (no requeue). A fatal exit code
+  // fails fast to the cap. Runs before the cascade so a job hitting the cap this
+  // tick lands in the failed set that cancels its dependents this same tick.
+  for (const [name, rec] of Object.entries(completions.done)) {
+    if (rec.ts <= (state.processedCompletionTs[name] ?? 0)) continue; // already accounted for
+    state.processedCompletionTs[name] = rec.ts;
+    if (rec.exitCode === 0) {
+      state.lastSuccess[name] = rec.ts;
+      state.attempts[name] = 0;
+      continue;
+    }
+    state.attempts[name] = rec.exitCode === FATAL_EXIT_CODE ? MAX_ATTEMPTS : (state.attempts[name] ?? 0) + 1;
+    if (state.attempts[name]! < MAX_ATTEMPTS) {
+      const job = jobByName.get(name) ?? jobs.find((x) => x.name === name);
+      if (job) state.queue.enqueue(name, deps.priority(job)); // back of line (dedup-safe)
+      deps.log(`retry ${name} (attempt ${state.attempts[name]}/${MAX_ATTEMPTS})`);
+    } else {
+      deps.log(`failed ${name} (gave up after ${MAX_ATTEMPTS} attempts)`);
+    }
+  }
+
   // A job whose last completion is within its cooldown is skipped at enqueue —
   // cronbird owns the cooldown gate (single scheduler of truth), so nothing is
   // dispatched into a downstream cooldown-skip that would read as success.

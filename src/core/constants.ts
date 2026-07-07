@@ -18,6 +18,14 @@ export const MAX_CONCURRENT = 1;
 export const MAX_ATTEMPTS = 3;
 
 /**
+ * Dispatch-wrapper-reserved exit code for an unrecoverable failure (e.g. a
+ * missing-credential `requires:` gate). Fails fast — the retry logic jumps
+ * straight to the cap rather than burning MAX_ATTEMPTS runs on a guaranteed loss.
+ * 78 = EX_CONFIG (sysexits.h).
+ */
+export const FATAL_EXIT_CODE = 78;
+
+/**
  * Bounds for the per-schedule missed-slot catch-up look-back. The daemon
  * derives each job's look-back from its own cadence and clamps it here: a
  * sub-floor cadence (e.g. 5-minutely) clamps up to the floor, a long cadence

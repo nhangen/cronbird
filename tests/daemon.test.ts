@@ -3,7 +3,7 @@ import { lookbackForSchedule } from "../src/core/catchup";
 import { createMatcher } from "../src/core/cron";
 import type { Job, Topology, Heartbeat, CompletionRecord } from "../src/core/types";
 import { type DaemonDeps, runForever } from "../src/core/daemon";
-import { CATCHUP_LOOKBACK_CAP_MS, CATCHUP_LOOKBACK_FLOOR_MS } from "../src/core/constants";
+import { CATCHUP_LOOKBACK_CAP_MS, CATCHUP_LOOKBACK_FLOOR_MS, FATAL_EXIT_CODE } from "../src/core/constants";
 
 const m = createMatcher({ timezone: "UTC" });
 const d = (iso: string) => new Date(iso);
@@ -660,5 +660,68 @@ describe("dependency gate + cascade in the drain — Task B", () => {
     expect(h.logs.some((l) => l.includes("cascade-cancel dep"))).toBe(true);
     // dep dropped from the persisted queue too.
     expect((h.heartbeats.at(-1)!.queue ?? []).some((e) => e.name === "dep")).toBe(false);
+  });
+});
+
+describe("three-strikes retry — Task C", () => {
+  const doneRec = (exit: number, ts: number) => ({ ts, exitCode: exit, durationMs: 0 });
+
+  test("a fresh failure re-enqueues at back of line up to MAX-1, then marks failed", async () => {
+    const base = d("2026-07-07T09:00:00Z").getTime();
+    // Three consecutive failing completions across three same-minute ticks.
+    const doneByTick = [
+      { j: doneRec(1, base + 1) },
+      { j: doneRec(1, base + 2) },
+      { j: doneRec(1, base + 3) },
+    ];
+    let call = 0;
+    const h = harness({
+      nows: [d("2026-07-07T09:00:00Z"), d("2026-07-07T09:00:10Z"), d("2026-07-07T09:00:20Z")],
+      playbooks: [pb({ name: "j", cronSchedule: "0 9 * * *" })],
+      readCompletions: () => ({ running: {}, done: doneByTick[Math.min(call++, 2)]! }),
+    });
+    await runForever(h.deps);
+    const hb = h.heartbeats.at(-1)!;
+    expect(hb.attempts.j).toBe(3); // hit the cap
+    expect((hb.queue ?? []).some((e) => e.name === "j")).toBe(false); // not requeued after the 3rd
+    expect(h.logs.some((l) => l.includes("failed j"))).toBe(true);
+  });
+
+  test("a success resets the attempt counter and stamps last_success", async () => {
+    const base = d("2026-07-07T09:00:00Z").getTime();
+    const h = harness({
+      nows: [d("2026-07-07T09:00:00Z")],
+      playbooks: [pb({ name: "j", cronSchedule: "0 10 * * *" })], // off-tick: only completion matters
+      startHeartbeat: h0Heartbeat({ attempts: { j: 2 } }),
+      readCompletions: () => ({ running: {}, done: { j: doneRec(0, base + 5) } }),
+    });
+    await runForever(h.deps);
+    const hb = h.heartbeats.at(-1)!;
+    expect(hb.attempts.j).toBe(0);
+    expect(hb.last_success.j).toBe(base + 5);
+  });
+
+  test("a fatal exit code fails fast (jumps straight to the cap, no retries consumed)", async () => {
+    const base = d("2026-07-07T09:00:00Z").getTime();
+    const h = harness({
+      nows: [d("2026-07-07T09:00:00Z")],
+      playbooks: [pb({ name: "j", cronSchedule: "0 10 * * *" })],
+      readCompletions: () => ({ running: {}, done: { j: doneRec(FATAL_EXIT_CODE, base + 1) } }),
+    });
+    await runForever(h.deps);
+    expect(h.heartbeats.at(-1)!.attempts.j).toBe(3);
+  });
+
+  test("a completion already reflected in the restored state is not re-counted", async () => {
+    // Restart: attempts.j=1 and last_completed.j is the failure that produced it.
+    // readCompletions still shows that same (stale) done → must NOT bump to 2.
+    const h = harness({
+      nows: [d("2026-07-07T09:00:00Z")],
+      playbooks: [pb({ name: "j", cronSchedule: "0 10 * * *" })],
+      startHeartbeat: h0Heartbeat({ attempts: { j: 1 }, done: { j: 1 } }), // last_completed.j.ts = 1
+      readCompletions: () => ({ running: {}, done: { j: doneRec(1, 1) } }), // same ts=1
+    });
+    await runForever(h.deps);
+    expect(h.heartbeats.at(-1)!.attempts.j).toBe(1); // unchanged
   });
 });
