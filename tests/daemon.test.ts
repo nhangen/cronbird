@@ -43,6 +43,8 @@ interface HarnessOpts {
   priority?: (job: Job<unknown>) => number;
   /** File-based run state. Default: nothing running / nothing done. */
   readCompletions?: () => { running: Record<string, number>; done: Record<string, CompletionRecord> };
+  /** Per-job cooldown in seconds. Default: () => 0 (no cooldown). */
+  cooldownSeconds?: (job: Job<unknown>) => number;
 }
 
 function harness(opts: HarnessOpts) {
@@ -123,6 +125,7 @@ function harness(opts: HarnessOpts) {
     shouldContinue: () => i < opts.nows.length,
     priority: opts.priority ?? (() => 0),
     readCompletions: opts.readCompletions ?? (() => ({ running: {}, done: {} })),
+    cooldownSeconds: opts.cooldownSeconds ?? (() => 0),
   };
   return {
     deps,
@@ -492,5 +495,36 @@ describe("priority enqueue + last_fired-at-enqueue (Task 3)", () => {
     expect(h.dispatched).toEqual([]);
     // `waiting` was enqueued (last_fired stamped) but held, not dispatched.
     expect(h.heartbeats[0]!.last_fired.waiting).toBeDefined();
+  });
+});
+
+describe("cooldown gate at enqueue (Task 3.5)", () => {
+  const now = d("2026-06-01T09:00:00Z");
+  const done = (agoMs: number) => ({
+    running: {},
+    done: { job1: { ts: now.getTime() - agoMs, exitCode: 0, durationMs: 0 } },
+  });
+
+  test("a job whose last completion is within its cooldown is NOT enqueued", async () => {
+    const h = harness({
+      nows: [now],
+      playbooks: [pb({ name: "job1", cronSchedule: "0 9 * * *" })],
+      cooldownSeconds: () => 1800, // 30 min
+      readCompletions: () => done(5 * 60_000), // completed 5 min ago → within cooldown
+    });
+    await runForever(h.deps);
+    expect(h.dispatched).toEqual([]); // gated at enqueue → never dispatched
+    expect(h.logs.some((l) => l.includes("cooldown skip job1"))).toBe(true);
+  });
+
+  test("a job whose last completion is older than its cooldown IS enqueued and dispatched", async () => {
+    const h = harness({
+      nows: [now],
+      playbooks: [pb({ name: "job1", cronSchedule: "0 9 * * *" })],
+      cooldownSeconds: () => 1800,
+      readCompletions: () => done(60 * 60_000), // completed 60 min ago → past cooldown
+    });
+    await runForever(h.deps);
+    expect(h.dispatched).toEqual(["job1"]);
   });
 });

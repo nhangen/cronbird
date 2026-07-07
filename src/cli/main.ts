@@ -83,6 +83,10 @@ async function main(): Promise<void> {
     // that wrapper lands, the fail-safe empty read means "nothing running", so the
     // queue drains every tick — identical to the prior fire-and-forget dispatch.
     readCompletions: () => ({ running: {}, done: {} }),
+    // Cooldown gate. 0 = no cooldown until the product resolver (reads each job's
+    // cooldown_seconds metadata) is wired alongside the dispatch wrapper — keeps
+    // current behavior (no cooldown enforced in the engine yet).
+    cooldownSeconds: () => 0,
   };
 
   log(`started — host=${cfg.hostname} registry=${cfg.registryPath}`);

@@ -64,6 +64,14 @@ export interface DaemonDeps<T = unknown> {
    * "run everything".
    */
   readCompletions(): { running: Record<string, number>; done: Record<string, CompletionRecord> };
+  /**
+   * Product-supplied per-job cooldown in seconds. A job whose last completion
+   * (from `readCompletions().done`) is more recent than its cooldown is NOT
+   * enqueued — cronbird is the single owner of the cooldown gate, so a job is
+   * never dispatched into a downstream cooldown-skip that would look like a
+   * clean success. Default resolver returns 0 (no cooldown).
+   */
+  cooldownSeconds(job: Job<T>): number;
 }
 
 /**
@@ -162,18 +170,36 @@ export function runOneTick<T>(deps: DaemonDeps<T>, state: TickState<T>): number 
   // treated as first-seen and never replayed: at-most-once over double-fire.
   const nextLastFired: Record<string, number> = {};
   for (const p of runnable) nextLastFired[p.name] = state.lastFired[p.name] ?? now.getTime();
+  // Read run state once per tick: drives the cooldown gate (below) and the drain.
+  const completions = deps.readCompletions();
+  // A job whose last completion is within its cooldown is skipped at enqueue —
+  // cronbird owns the cooldown gate (single scheduler of truth), so nothing is
+  // dispatched into a downstream cooldown-skip that would read as success.
+  const withinCooldown = (job: Job<T>): boolean => {
+    const done = completions.done[job.name];
+    return done !== undefined && now.getTime() - done.ts < deps.cooldownSeconds(job) * 1000;
+  };
   // ENQUEUE (not dispatch) due + catch-up slots by priority; stamp last_fired at
   // enqueue so the queued entry is the single slot owner. Draining happens after
   // the heartbeat write below.
   for (const p of due) {
     state.guard.set(p.name, minute);
-    if (state.queue.enqueue(p.name, deps.priority(jobByName.get(p.name)!))) {
+    const job = jobByName.get(p.name)!;
+    if (withinCooldown(job)) {
+      deps.log(`cooldown skip ${p.name}`);
+      continue;
+    }
+    if (state.queue.enqueue(p.name, deps.priority(job))) {
       nextLastFired[p.name] = minuteStart;
       state.slotTsByName[p.name] = minuteStart;
       state.recent.push({ name: p.name, ts: now.getTime() });
     }
   }
   for (const f of catches) {
+    if (withinCooldown(f.job)) {
+      deps.log(`cooldown skip ${f.job.name}`);
+      continue;
+    }
     if (state.queue.enqueue(f.job.name, deps.priority(f.job))) {
       nextLastFired[f.job.name] = Math.max(nextLastFired[f.job.name] ?? 0, f.slot.getTime());
       state.slotTsByName[f.job.name] = f.slot.getTime();
@@ -206,7 +232,7 @@ export function runOneTick<T>(deps: DaemonDeps<T>, state: TickState<T>): number 
   // the count reflects jobs that have actually completed — that is what advances
   // the chain. A throwing dispatch is error-isolated AND does not consume a slot
   // (a failed spawn never started a job), so one bad job can't wedge the chain.
-  let runningCount = Object.keys(deps.readCompletions().running).length;
+  let runningCount = Object.keys(completions.running).length;
   while (runningCount < MAX_CONCURRENT) {
     const next = state.queue.dequeue();
     if (next === null) break;
