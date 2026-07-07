@@ -47,9 +47,15 @@ export interface Heartbeat {
   /** jobName → epoch-ms of the newest slot fired (drives catch-up). */
   last_fired: Record<string, number>;
   /** Persisted priority queue so a restart resumes the backlog. */
-  queue?: QueueEntry[];
+  queue: QueueEntry[];
   /** jobName → startedTs of an in-flight run (restored from running/ dir). */
-  running?: Record<string, number>;
+  running: Record<string, number>;
   /** jobName → last completion (exit code + duration) for cooldown + metrics. */
-  last_completed?: Record<string, CompletionRecord>;
+  last_completed: Record<string, CompletionRecord>;
+  /** jobName → consecutive failed attempts since last success (retry counter). */
+  attempts: Record<string, number>;
+  /** jobName → epoch-ms it was last dispatched (drives dependency eligibility). */
+  last_run: Record<string, number>;
+  /** jobName → epoch-ms of its last exit-0 completion. */
+  last_success: Record<string, number>;
 }

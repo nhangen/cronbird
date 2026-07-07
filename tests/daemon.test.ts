@@ -200,6 +200,12 @@ describe("double-fire guard", () => {
         last_dispatch: [{ name: "ev", ts: d("2026-06-01T09:00:02Z").getTime() }],
         dispatched_minute: { ev: minute },
         last_fired: {},
+        queue: [],
+        running: {},
+        last_completed: {},
+        attempts: {},
+        last_run: {},
+        last_success: {},
       },
     });
     await runForever(h.deps);
@@ -250,6 +256,12 @@ describe("missed-slot catch-up (#143)", () => {
     last_dispatch: [],
     dispatched_minute: {},
     last_fired: lastFired,
+    queue: [],
+    running: {},
+    last_completed: {},
+    attempts: {},
+    last_run: {},
+    last_success: {},
   });
 
   test("fires once for the newest missed slot after a downtime gap and advances last_fired", async () => {
@@ -526,5 +538,36 @@ describe("cooldown gate at enqueue (Task 3.5)", () => {
     });
     await runForever(h.deps);
     expect(h.dispatched).toEqual(["job1"]);
+  });
+});
+
+describe("restart durability (queue + retry state) — Task A", () => {
+  test("queued backlog and retry/timestamps persist and restore", async () => {
+    // Run 1: two due jobs, one already running elsewhere → both queued, none drained.
+    const h1 = harness({
+      nows: [d("2026-07-07T09:00:00Z")],
+      playbooks: [pb({ name: "a", cronSchedule: "0 9 * * *" }), pb({ name: "b", cronSchedule: "0 9 * * *" })],
+      priority: (j) => (j.name === "a" ? 1 : 2),
+      readCompletions: () => ({ running: { x: 1 }, done: {} }),
+    });
+    await runForever(h1.deps);
+    expect(h1.dispatched).toEqual([]); // cap reached by the foreign running job
+    const hb = h1.heartbeats.at(-1)!;
+    expect((hb.queue ?? []).map((e) => e.name)).toEqual(["a", "b"]);
+    expect(hb.attempts).toEqual({});
+    expect(hb.last_run).toBeDefined();
+
+    // Run 2: restart from hb, nothing running now → drains "a" first (priority 1).
+    const h2 = harness({
+      nows: [d("2026-07-07T09:01:00Z")],
+      playbooks: [pb({ name: "a", cronSchedule: "0 9 * * *" }), pb({ name: "b", cronSchedule: "0 9 * * *" })],
+      priority: (j) => (j.name === "a" ? 1 : 2),
+      startHeartbeat: hb,
+      readCompletions: () => ({ running: {}, done: {} }),
+    });
+    await runForever(h2.deps);
+    expect(h2.dispatched).toEqual(["a"]);
+    // "a" dispatched → its last_run stamped at run-2's now.
+    expect(h2.heartbeats.at(-1)!.last_run!.a).toBe(d("2026-07-07T09:01:00Z").getTime());
   });
 });

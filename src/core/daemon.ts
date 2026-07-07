@@ -94,6 +94,14 @@ export interface TickState<T = unknown> {
   lastGoodOwners: Record<string, string>;
   /** jobName → slot epoch-ms of the queued entry (staleness eviction, Task 6). */
   slotTsByName: Record<string, number>;
+  /** jobName → consecutive failures since last success (retry counter). */
+  attempts: Record<string, number>;
+  /** jobName → epoch-ms last dispatched (drives dependency eligibility). */
+  lastRun: Record<string, number>;
+  /** jobName → epoch-ms of last exit-0 completion. */
+  lastSuccess: Record<string, number>;
+  /** jobName → done.ts already accounted for, so a completion is processed once. */
+  processedCompletionTs: Record<string, number>;
 }
 
 function epochMinute(when: Date): number {
@@ -107,14 +115,20 @@ export async function runForever<T>(deps: DaemonDeps<T>): Promise<void> {
   // de-own a single-scope job and skip a run that minute.
   // So a torn topology read reuses the previous tick's owners; enabled does not get
   // last-good because an empty enabled set is the safe (nothing-runs) default.
+  const queue = new RunQueue();
+  for (const e of prior?.queue ?? []) queue.enqueue(e.name, e.priority);
   const state: TickState<T> = {
-    queue: new RunQueue(),
+    queue,
     guard: new Map<string, number>(prior ? Object.entries(prior.dispatched_minute) : []),
     recent: prior ? [...prior.last_dispatch] : [],
     lastFired: prior ? { ...prior.last_fired } : {},
     lastGood: [],
     lastGoodOwners: {},
-    slotTsByName: {},
+    slotTsByName: prior ? Object.fromEntries((prior.queue ?? []).map((e) => [e.name, e.slotTs])) : {},
+    attempts: prior ? { ...prior.attempts } : {},
+    lastRun: prior ? { ...prior.last_run } : {},
+    lastSuccess: prior ? { ...prior.last_success } : {},
+    processedCompletionTs: {},
   };
 
   while (deps.shouldContinue()) {
@@ -225,6 +239,12 @@ export function runOneTick<T>(deps: DaemonDeps<T>, state: TickState<T>): number 
     last_dispatch: [...state.recent],
     dispatched_minute: Object.fromEntries(state.guard),
     last_fired: state.lastFired,
+    queue: state.queue.snapshot().map((e) => ({ ...e, slotTs: state.slotTsByName[e.name] ?? now.getTime() })),
+    running: completions.running,
+    last_completed: completions.done,
+    attempts: state.attempts,
+    last_run: state.lastRun,
+    last_success: state.lastSuccess,
   });
 
   // Drain up to MAX_CONCURRENT running jobs, highest priority first. `running`
@@ -239,6 +259,7 @@ export function runOneTick<T>(deps: DaemonDeps<T>, state: TickState<T>): number 
     delete state.slotTsByName[next];
     try {
       deps.dispatch(next);
+      state.lastRun[next] = now.getTime();
       runningCount++; // only a successful dispatch occupies a slot
     } catch (err) {
       deps.log(`dispatch failed for ${next}: ${err instanceof Error ? err.message : String(err)}`);

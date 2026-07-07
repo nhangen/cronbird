@@ -9,6 +9,7 @@ describe("heartbeat shape", () => {
       ts: 0, host: "ml-1", runnable_count: 0, next_wake_ts: 0,
       last_dispatch: [], dispatched_minute: {}, last_fired: {},
       queue: [q], running: { morning: 5 }, last_completed: { morning: c },
+      attempts: {}, last_run: {}, last_success: {},
     };
     expect(hb.queue[0].name).toBe("morning");
     expect(hb.running.morning).toBe(5);

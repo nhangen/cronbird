@@ -21,6 +21,12 @@ const hb: Heartbeat = {
   last_dispatch: [{ name: "morning-scan", ts: 1_780_000_000_000 }],
   dispatched_minute: { "morning-scan": 29_666_666 },
   last_fired: { "morning-scan": 1_780_000_000_000 },
+  queue: [],
+  running: {},
+  last_completed: {},
+  attempts: {},
+  last_run: {},
+  last_success: {},
 };
 
 describe("heartbeat round-trip", () => {
