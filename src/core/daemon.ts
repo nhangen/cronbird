@@ -14,7 +14,7 @@
 import { catchUpFires } from "./catchup";
 import { FATAL_EXIT_CODE, MAX_ATTEMPTS, MAX_CONCURRENT } from "./constants";
 import type { CronMatcher } from "./cron";
-import { failedJobs, isEligible, transitiveUpstreamFailed } from "./dependencies";
+import { failedJobs, isEligible, transitiveUpstreamFailed, validateDependencies } from "./dependencies";
 import { RunQueue } from "./run-queue";
 import { dueAt, nextWake, selectRunnable } from "./select";
 import type { CompletionRecord, DispatchRecord, Heartbeat, Job, Topology } from "./types";
@@ -177,7 +177,22 @@ export function runOneTick<T>(deps: DaemonDeps<T>, state: TickState<T>): number 
   const enabled = deps.loadEnabled();
   const topology = deps.loadTopology();
   if (topology !== null) state.lastGoodOwners = topology.owners;
-  const runnable = selectRunnable(jobs, deps.host, enabled, state.lastGoodOwners);
+  const selected = selectRunnable(jobs, deps.host, enabled, state.lastGoodOwners);
+
+  // Upstream resolver over the full loaded registry — shared by dependency
+  // validation (here), the cascade, and the eligibility gate. Uses `jobs` (not
+  // the runnable subset) so an edge to an off-host/disabled job still resolves.
+  const upstreamsOf = (n: string): string[] => {
+    const job = jobs.find((x) => x.name === n);
+    return job ? deps.dependencies(job) : [];
+  };
+  // Reject dependency cycles and edges to unknown jobs at load: fail the whole
+  // job (exclude from runnable), not just the edge — a dropped edge would let a
+  // dependent run before an upstream that can never satisfy it.
+  const { invalid, warnings: depWarnings } = validateDependencies(selected, upstreamsOf);
+  for (const w of depWarnings) deps.log(`dependency: ${w}`);
+  const runnable = invalid.size ? selected.filter((j) => !invalid.has(j.name)) : selected;
+
   const minuteStart = minute * MINUTE_MS;
   const jobByName = new Map(runnable.map((j) => [j.name, j]));
 
@@ -267,13 +282,6 @@ export function runOneTick<T>(deps: DaemonDeps<T>, state: TickState<T>): number 
   // minute (and a same-minute restart) can produce a double-fire.
   for (const [name, mn] of state.guard) if (mn < minute - 1) state.guard.delete(name);
 
-  // Upstream resolver shared by the cascade (here) and the eligibility gate
-  // (drain). Falls back to the full loaded registry so a queued-but-not-runnable
-  // job (restored from the heartbeat) still resolves its edges.
-  const upstreamsOf = (n: string): string[] => {
-    const j = jobByName.get(n) ?? jobs.find((x) => x.name === n);
-    return j ? deps.dependencies(j) : [];
-  };
   // Cascade: derive the failed set from persisted state, then drop any queued
   // job whose (transitive) upstream has finally failed. Pure function of state,
   // so a crash mid-cascade re-derives the same decision next tick. Under N=1 a

@@ -725,3 +725,30 @@ describe("three-strikes retry — Task C", () => {
     expect(h.heartbeats.at(-1)!.attempts.j).toBe(1); // unchanged
   });
 });
+
+describe("dependency cycle/unknown-edge rejection at load — Task D", () => {
+  test("a job in a cycle is excluded from dispatch and logged", async () => {
+    const h = harness({
+      nows: [d("2026-07-07T09:00:00Z")],
+      playbooks: [pb({ name: "a", cronSchedule: "0 9 * * *" }), pb({ name: "b", cronSchedule: "0 9 * * *" })],
+      dependencies: (j) => (j.name === "a" ? ["b"] : j.name === "b" ? ["a"] : []), // a↔b cycle
+      readCompletions: () => ({ running: {}, done: {} }),
+    });
+    await runForever(h.deps);
+    expect(h.dispatched).toEqual([]); // both invalid → neither runs
+    expect(h.logs.some((l) => l.includes("dependency:") && l.toLowerCase().includes("cycle"))).toBe(true);
+  });
+
+  test("a job depending on an unknown job is excluded; the valid independent still runs", async () => {
+    const h = harness({
+      nows: [d("2026-07-07T09:00:00Z")],
+      playbooks: [pb({ name: "d", cronSchedule: "0 9 * * *" }), pb({ name: "free", cronSchedule: "0 9 * * *" })],
+      dependencies: (j) => (j.name === "d" ? ["ghost"] : []),
+      priority: (j) => (j.name === "d" ? 1 : 2),
+      readCompletions: () => ({ running: {}, done: {} }),
+    });
+    await runForever(h.deps);
+    expect(h.dispatched).toEqual(["free"]); // d excluded despite higher priority
+    expect(h.logs.some((l) => l.includes("unknown job ghost"))).toBe(true);
+  });
+});
