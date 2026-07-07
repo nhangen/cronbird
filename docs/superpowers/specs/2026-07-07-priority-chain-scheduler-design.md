@@ -1,10 +1,10 @@
 # cronbird: Priority-Chain Scheduler + Completion Tracking — Design
 
 **Date:** 2026-07-07
-**Status:** design / approved (approach B; audit-folded)
-**Scope:** cronbird engine (completion tracking + priority run-queue + N=1 chain)
-and the ceo-cron.sh integration (lock/cooldown demotion). Not the ticket-triage
-schedule config fix (tracked separately).
+**Status:** design / approved (approach B; audit-folded; dependency chain added as foundation)
+**Scope:** cronbird engine (completion tracking + priority run-queue + N=1 chain
++ **job dependency chain** with retry + cascade) and the ceo-cron.sh integration
+(lock/cooldown demotion). Not the ticket-triage schedule config fix (separate).
 
 ## Problem
 
@@ -24,6 +24,50 @@ Replace "N processes fight one lock, losers dropped after 30s" with "cronbird
 enqueues due jobs by priority and drains them as a chain — the next fires only
 when the current completes." **Blocking (wait your turn), not locking (race +
 drop).** A WordPress-style priority chain.
+
+## Dependency chain (foundation)
+
+Completion tracking exists to gate dependents on pass/fail. A job declares
+prerequisites in frontmatter; the engine reads them via an injected
+`dependencies(job): string[]` resolver (product-agnostic; `Job.metadata` opaque).
+
+```yaml
+dependsOn: [gather-data]   # runs only after gather-data succeeds "since I last ran"
+```
+
+**Eligibility ("succeeded since last run" — user decision 1).** A queued job `D`
+is eligible to dispatch iff, for every upstream `U` in `dependencies(D)`, `U` has
+a **success timestamped after `D`'s own last run** (`lastSuccess[U] > lastRun[D]`;
+if `D` never ran, any `U` success qualifies). Cross-cadence-safe: a daily `D`
+waits for the next success of an hourly `U`, uses a *fresh* result every time, and
+never double-fires on the same upstream success (once `D` runs, `lastRun[D]`
+advances, so it needs a *new* `U` success to run again). Independent jobs (no
+`dependsOn`) are always eligible (subject to cooldown / retry backoff).
+
+**Retry on failure ("three strikes, back of line" — user decision 2).** On a
+non-zero `done/<job>` exit: increment `attempts[job]` (persisted) and **re-enqueue
+at the back of the line** (its own priority; FIFO puts it behind current entries).
+attempt 1 fails → back of line; attempt 2 fails → back of line; **attempt 3 fails
+→ mark failed/not-run** (no requeue). `MAX_ATTEMPTS = 3`. Fatal exit codes (e.g.
+missing-credential `requires:` gate) **fail-fast** — straight to failed — so we
+don't burn 3 Claude runs on a guaranteed loss.
+
+**Cascade on final failure.** "Failed" is a **pure function of persisted state**:
+`attempts[job] >= MAX_ATTEMPTS && last done exit ≠ 0`. Each tick, any job that
+(transitively) `dependsOn` a failed job is **cascade-cancelled** for this cycle —
+removed from the queue, not re-enqueued, logged. Recomputing from persisted state
+each tick makes a crash mid-cascade re-derive the same decision (crash-safe by
+construction). Under N=1 a dependent can never be mid-run when its upstream fails
+(only one runs at a time), so cascade only touches *queued* jobs — never a live
+process. Diamond (D←B,C←A): A failing cancels B, C, and therefore D.
+
+**Cycles / bad edges** are rejected at registry load (topological check): a
+dependency cycle or an edge to an unknown job **fails that job** (not silently the
+edge — a dropped edge would let a dependent run prematurely), logged loudly.
+
+**Liveness.** A backing-off / re-queued job stays a live queue entry, so a tick
+where every queued job is dependency-blocked simply idles and re-evaluates next
+tick — the queue never declares "done" while any entry remains.
 
 ## Invariants preserved
 
@@ -158,12 +202,28 @@ child exits → wrapper writes done/ → next tick observes it → drain next (c
   lower priority runs only after higher completes.
 - Each test fails when its guard is reverted.
 
-## Decisions (were open questions; answerable, not the user's to adjudicate)
+## Decisions
 
-- **Concurrency = N=1 global** — that is the ask ("serialize the chain, no
-  drops"). Read-tier parallelism is a deferred future toggle, not v1.
+- **Concurrency = N=1 global** — the ask ("serialize the chain, no drops").
+  Read-tier parallelism is a deferred future toggle, not v1.
 - **Lock demotion assumes ceo-cron.sh is single-caller on ML-1** (only cronbird
   invokes it). If a second caller ever exists, the backstop lock still guards it.
+- **Dependency success = "succeeded since the dependent last ran"** (user
+  decision 1): `lastSuccess[U] > lastRun[D]`.
+- **Retry = three strikes, back of line** (user decision 2): fail → re-enqueue at
+  back; 3rd failure → mark failed/not-run; fatal exit codes fail-fast.
+
+## Build order (dependency chain is foundation, so it precedes staleness)
+
+1. Persistence (queue + `attempts` + `lastRun`/`lastSuccess`) — prerequisite for
+   surviving retry counts and dependency state across restart.
+2. Dependency resolver + eligibility gate + transitive cascade-cancel.
+3. Retry (three-strikes, back-of-line, fatal fail-fast).
+4. Registry-load cycle/unknown-edge rejection.
+5. Staleness eviction (shares the slot/eligibility machinery).
+
+Already built (priority enqueue, N=1 chain, cooldown gate, `runOneTick`
+extraction) stands; the drain becomes dependency-eligibility-aware.
 
 ## Out of scope
 
