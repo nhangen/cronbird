@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { lookbackForSchedule } from "../src/core/catchup";
 import { createMatcher } from "../src/core/cron";
-import type { Job, Topology, Heartbeat } from "../src/core/types";
+import type { Job, Topology, Heartbeat, CompletionRecord } from "../src/core/types";
 import { type DaemonDeps, runForever } from "../src/core/daemon";
 import { CATCHUP_LOOKBACK_CAP_MS, CATCHUP_LOOKBACK_FLOOR_MS } from "../src/core/constants";
 
@@ -39,6 +39,10 @@ interface HarnessOpts {
    * torn read → empty set that tick.
    */
   enabledByTick?: (Set<string> | null)[];
+  /** Product precedence resolver; lower number = higher precedence. Default: () => 0. */
+  priority?: (job: Job<unknown>) => number;
+  /** File-based run state. Default: nothing running / nothing done. */
+  readCompletions?: () => { running: Record<string, number>; done: Record<string, CompletionRecord> };
 }
 
 function harness(opts: HarnessOpts) {
@@ -117,6 +121,8 @@ function harness(opts: HarnessOpts) {
         ? () => opts.lookback as number
         : (schedule, now) => lookbackForSchedule(schedule, now, m, CATCHUP_LOOKBACK_FLOOR_MS, CATCHUP_LOOKBACK_CAP_MS),
     shouldContinue: () => i < opts.nows.length,
+    priority: opts.priority ?? (() => 0),
+    readCompletions: opts.readCompletions ?? (() => ({ running: {}, done: {} })),
   };
   return {
     deps,
@@ -436,5 +442,32 @@ describe("dispatch error isolation", () => {
     await expect(runForever(h.deps)).resolves.toBeUndefined();
     expect(h.dispatched).toContain("ok");
     expect(h.logs.some((l) => l.includes("boom") && l.includes("ENOENT"))).toBe(true);
+  });
+});
+
+describe("priority enqueue + last_fired-at-enqueue (Task 3)", () => {
+  test("two jobs due in the same tick are enqueued and drained in PRIORITY order, not registry/due order", async () => {
+    const now = d("2026-06-01T09:00:00Z");
+    const minuteStart = Math.floor(now.getTime() / 60_000) * 60_000;
+    // Registry/due order is [low, high]; the priority resolver makes `high` the
+    // higher-precedence (lower number). If dispatch still went in due order this
+    // would be ["low","high"]; the priority queue must reorder the drain.
+    const h = harness({
+      nows: [now],
+      playbooks: [
+        pb({ name: "low", cronSchedule: "0 9 * * *" }),
+        pb({ name: "high", cronSchedule: "0 9 * * *" }),
+      ],
+      priority: (j) => (j.name === "high" ? 1 : 10),
+    });
+    await runForever(h.deps);
+    // Nothing running → both drain this tick, but higher priority first.
+    expect(h.dispatched).toEqual(["high", "low"]);
+    // last_fired is stamped for both jobs at ENQUEUE — proven by it already being
+    // in the heartbeat persisted BEFORE dispatch ran.
+    expect(h.heartbeats[0]!.last_fired.high).toBe(minuteStart);
+    expect(h.heartbeats[0]!.last_fired.low).toBe(minuteStart);
+    expect(h.lastFiredAtDispatch().high).toBe(minuteStart);
+    expect(h.lastFiredAtDispatch().low).toBe(minuteStart);
   });
 });

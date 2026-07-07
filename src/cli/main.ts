@@ -76,6 +76,13 @@ async function main(): Promise<void> {
     maxSleepMs: cfg.maxSleepMs,
     resolveLookback: (schedule, now) => lookbackForSchedule(schedule, now, matcher, cfg.catchupLookbackFloorMs, cfg.catchupLookbackCapMs),
     shouldContinue: () => running,
+    // Product precedence resolver. No priority source is wired yet, so all jobs
+    // share precedence 0 (FIFO) — identical ordering to the pre-queue dispatch.
+    priority: () => 0,
+    // File-based run state written by the dispatch wrapper (separate plan). Until
+    // that wrapper lands, the fail-safe empty read means "nothing running", so the
+    // queue drains every tick — identical to the prior fire-and-forget dispatch.
+    readCompletions: () => ({ running: {}, done: {} }),
   };
 
   log(`started — host=${cfg.hostname} registry=${cfg.registryPath}`);

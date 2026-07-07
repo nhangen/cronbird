@@ -13,8 +13,9 @@
  */
 import { catchUpFires } from "./catchup";
 import type { CronMatcher } from "./cron";
+import { RunQueue } from "./run-queue";
 import { dueAt, nextWake, selectRunnable } from "./select";
-import type { DispatchRecord, Heartbeat, Job, Topology } from "./types";
+import type { CompletionRecord, DispatchRecord, Heartbeat, Job, Topology } from "./types";
 
 const MINUTE_MS = 60_000;
 /** How many recent dispatches to retain in the heartbeat for observability. */
@@ -53,6 +54,37 @@ export interface DaemonDeps<T = unknown> {
    */
   resolveLookback(schedule: string, now: Date): number;
   shouldContinue(): boolean;
+  /** Product-supplied precedence; lower number = higher precedence. */
+  priority(job: Job<T>): number;
+  /**
+   * File-based run state written by the dispatch wrapper: in-flight runs
+   * (`running/`) and finished runs (`done/`). Fail-safe on a torn/missing read —
+   * returns empty maps so an unreadable state means "nothing runs", never
+   * "run everything".
+   */
+  readCompletions(): { running: Record<string, number>; done: Record<string, CompletionRecord> };
+}
+
+/**
+ * Cross-tick mutable state that used to live in {@link runForever}'s closure.
+ * Extracted so a single tick ({@link runOneTick}) can be exercised in isolation
+ * while the loop still owns the persistent queue/guard/last-good state.
+ */
+export interface TickState<T = unknown> {
+  /** Due + catch-up jobs enqueued by priority, drained (N-capped) each tick. */
+  queue: RunQueue;
+  /** jobName → epoch-minute last enqueued (durable double-fire guard). */
+  guard: Map<string, number>;
+  /** jobName → epoch-ms of the newest slot fired (drives catch-up). */
+  lastFired: Record<string, number>;
+  /** Recent dispatch records retained in the heartbeat for observability. */
+  recent: DispatchRecord[];
+  /** Last successfully-loaded registry, reused on a torn read. */
+  lastGood: Job<T>[];
+  /** Last authoritative topology owners, reused on a torn topology read. */
+  lastGoodOwners: Record<string, string>;
+  /** jobName → slot epoch-ms of the queued entry (staleness eviction, Task 6). */
+  slotTsByName: Record<string, number>;
 }
 
 function epochMinute(when: Date): number {
@@ -61,98 +93,128 @@ function epochMinute(when: Date): number {
 
 export async function runForever<T>(deps: DaemonDeps<T>): Promise<void> {
   const prior = deps.readHeartbeat();
-  const guard = new Map<string, number>(prior ? Object.entries(prior.dispatched_minute) : []);
-  const recent: DispatchRecord[] = prior ? [...prior.last_dispatch] : [];
-  let lastFired: Record<string, number> = prior ? { ...prior.last_fired } : {};
-  let lastGood: Job<T>[] = [];
   // Last-good topology owners. Unlike enabled (safe-empty on a torn read), topology
   // owners are authoritative cross-host state: transiently losing them would
   // de-own a single-scope job and skip a run that minute.
   // So a torn topology read reuses the previous tick's owners; enabled does not get
   // last-good because an empty enabled set is the safe (nothing-runs) default.
-  let lastGoodOwners: Record<string, string> = {};
+  const state: TickState<T> = {
+    queue: new RunQueue(),
+    guard: new Map<string, number>(prior ? Object.entries(prior.dispatched_minute) : []),
+    recent: prior ? [...prior.last_dispatch] : [],
+    lastFired: prior ? { ...prior.last_fired } : {},
+    lastGood: [],
+    lastGoodOwners: {},
+    slotTsByName: {},
+  };
 
   while (deps.shouldContinue()) {
-    const now = deps.now();
-    const minute = epochMinute(now);
-
-    let jobs = lastGood;
-    try {
-      const loaded = deps.loadRegistry();
-      jobs = loaded.jobs;
-      lastGood = jobs;
-      for (const w of loaded.warnings) deps.log(`registry: ${w}`);
-    } catch (err) {
-      deps.log(`registry load failed, reusing last-good: ${err instanceof Error ? err.message : String(err)}`);
-    }
-
-    const enabled = deps.loadEnabled();
-    const topology = deps.loadTopology();
-    if (topology !== null) lastGoodOwners = topology.owners;
-    const runnable = selectRunnable(jobs, deps.host, enabled, lastGoodOwners);
-    const minuteStart = minute * MINUTE_MS;
-
-    // Current-minute fires (live path), then catch-up fires for slots missed
-    // while the daemon was down. The dueNames filter is defensive: catch-up only
-    // returns slots strictly before the current minute, so it can't already
-    // overlap `due` today — but it keeps a single tick from double-dispatching a
-    // job if that exclusion ever changes.
-    const due = dueAt(runnable, now, deps.matcher).filter((p) => guard.get(p.name) !== minute);
-    const dueNames = new Set(due.map((p) => p.name));
-    const catches = catchUpFires(runnable, lastFired, now, deps.matcher, (s) => deps.resolveLookback(s, now)).filter(
-      (f) => !dueNames.has(f.job.name),
-    );
-
-    // Rebuild last_fired keyed by the current runnable set, which prunes removed
-    // jobs. A first-seen job (or one that briefly left the runnable set
-    // — draft/host-scope flip) has no baseline and initializes to now, so it is
-    // treated as first-seen and never replayed: at-most-once over double-fire.
-    const nextLastFired: Record<string, number> = {};
-    for (const p of runnable) nextLastFired[p.name] = lastFired[p.name] ?? now.getTime();
-    for (const p of due) {
-      guard.set(p.name, minute);
-      nextLastFired[p.name] = minuteStart;
-      recent.push({ name: p.name, ts: now.getTime() });
-    }
-    for (const f of catches) {
-      nextLastFired[f.job.name] = Math.max(nextLastFired[f.job.name] ?? 0, f.slot.getTime());
-      recent.push({ name: f.job.name, ts: now.getTime() });
-    }
-    lastFired = nextLastFired;
-    if (recent.length > MAX_RECENT_DISPATCH) recent.splice(0, recent.length - MAX_RECENT_DISPATCH);
-
-    // Drop guard entries older than the previous minute — only the current
-    // minute (and a same-minute restart) can produce a double-fire.
-    for (const [name, mn] of guard) if (mn < minute - 1) guard.delete(name);
-
-    const wake = nextWake(runnable, now, deps.matcher, deps.maxSleepMs);
-    // Persist the guard and last_fired BEFORE firing. A crash between here and
-    // the spawn must not re-fire on restart, so dispatch is at-most-once: a
-    // crash drops a fire rather than doubling it (safer for write-tier jobs).
-    deps.writeHeartbeat({
-      ts: now.getTime(),
-      host: deps.host,
-      runnable_count: runnable.length,
-      next_wake_ts: now.getTime() + wake,
-      last_dispatch: [...recent],
-      dispatched_minute: Object.fromEntries(guard),
-      last_fired: lastFired,
-    });
-    for (const p of due) {
-      try {
-        deps.dispatch(p.name);
-      } catch (err) {
-        deps.log(`dispatch failed for ${p.name}: ${err instanceof Error ? err.message : String(err)}`);
-      }
-    }
-    for (const f of catches) {
-      try {
-        deps.dispatch(f.job.name);
-      } catch (err) {
-        deps.log(`dispatch failed for ${f.job.name}: ${err instanceof Error ? err.message : String(err)}`);
-      }
-    }
-
+    const wake = runOneTick(deps, state);
     await deps.sleep(wake);
   }
+}
+
+/**
+ * Run a single scheduler tick against the cross-tick {@link TickState}: re-read
+ * the registry/topology, enqueue due + catch-up slots by priority (stamping
+ * `last_fired` at ENQUEUE — a single slot owner), persist the heartbeat, then
+ * drain the queue. Returns the computed wake so the caller sleeps correctly.
+ *
+ * Behaviour matches the former inlined loop body: dispatch stays fire-and-forget
+ * and happens strictly AFTER the heartbeat write (at-most-once over double-fire).
+ */
+export function runOneTick<T>(deps: DaemonDeps<T>, state: TickState<T>): number {
+  const now = deps.now();
+  const minute = epochMinute(now);
+
+  let jobs = state.lastGood;
+  try {
+    const loaded = deps.loadRegistry();
+    jobs = loaded.jobs;
+    state.lastGood = jobs;
+    for (const w of loaded.warnings) deps.log(`registry: ${w}`);
+  } catch (err) {
+    deps.log(`registry load failed, reusing last-good: ${err instanceof Error ? err.message : String(err)}`);
+  }
+
+  const enabled = deps.loadEnabled();
+  const topology = deps.loadTopology();
+  if (topology !== null) state.lastGoodOwners = topology.owners;
+  const runnable = selectRunnable(jobs, deps.host, enabled, state.lastGoodOwners);
+  const minuteStart = minute * MINUTE_MS;
+  const jobByName = new Map(runnable.map((j) => [j.name, j]));
+
+  // Current-minute fires (live path), then catch-up fires for slots missed
+  // while the daemon was down. The dueNames filter is defensive: catch-up only
+  // returns slots strictly before the current minute, so it can't already
+  // overlap `due` today — but it keeps a single tick from double-dispatching a
+  // job if that exclusion ever changes.
+  const due = dueAt(runnable, now, deps.matcher).filter((p) => state.guard.get(p.name) !== minute);
+  const dueNames = new Set(due.map((p) => p.name));
+  const catches = catchUpFires(runnable, state.lastFired, now, deps.matcher, (s) => deps.resolveLookback(s, now)).filter(
+    (f) => !dueNames.has(f.job.name),
+  );
+
+  // Rebuild last_fired keyed by the current runnable set, which prunes removed
+  // jobs. A first-seen job (or one that briefly left the runnable set
+  // — draft/host-scope flip) has no baseline and initializes to now, so it is
+  // treated as first-seen and never replayed: at-most-once over double-fire.
+  const nextLastFired: Record<string, number> = {};
+  for (const p of runnable) nextLastFired[p.name] = state.lastFired[p.name] ?? now.getTime();
+  // ENQUEUE (not dispatch) due + catch-up slots by priority; stamp last_fired at
+  // enqueue so the queued entry is the single slot owner. Draining happens after
+  // the heartbeat write below.
+  for (const p of due) {
+    state.guard.set(p.name, minute);
+    if (state.queue.enqueue(p.name, deps.priority(jobByName.get(p.name)!))) {
+      nextLastFired[p.name] = minuteStart;
+      state.slotTsByName[p.name] = minuteStart;
+      state.recent.push({ name: p.name, ts: now.getTime() });
+    }
+  }
+  for (const f of catches) {
+    if (state.queue.enqueue(f.job.name, deps.priority(f.job))) {
+      nextLastFired[f.job.name] = Math.max(nextLastFired[f.job.name] ?? 0, f.slot.getTime());
+      state.slotTsByName[f.job.name] = f.slot.getTime();
+      state.recent.push({ name: f.job.name, ts: now.getTime() });
+    }
+  }
+  state.lastFired = nextLastFired;
+  if (state.recent.length > MAX_RECENT_DISPATCH) state.recent.splice(0, state.recent.length - MAX_RECENT_DISPATCH);
+
+  // Drop guard entries older than the previous minute — only the current
+  // minute (and a same-minute restart) can produce a double-fire.
+  for (const [name, mn] of state.guard) if (mn < minute - 1) state.guard.delete(name);
+
+  const wake = nextWake(runnable, now, deps.matcher, deps.maxSleepMs);
+  // Persist the guard and last_fired BEFORE firing. A crash between here and
+  // the spawn must not re-fire on restart, so dispatch is at-most-once: a
+  // crash drops a fire rather than doubling it (safer for write-tier jobs).
+  deps.writeHeartbeat({
+    ts: now.getTime(),
+    host: deps.host,
+    runnable_count: runnable.length,
+    next_wake_ts: now.getTime() + wake,
+    last_dispatch: [...state.recent],
+    dispatched_minute: Object.fromEntries(state.guard),
+    last_fired: state.lastFired,
+  });
+
+  // Minimal drain (Task 4 replaces this with the MAX_CONCURRENT cap): when
+  // nothing is running, drain the queue in priority order; when a run is already
+  // in flight, hold the backlog. Dispatch is fire-and-forget and error-isolated.
+  const runningCount = Object.keys(deps.readCompletions().running).length;
+  if (runningCount < 1) {
+    let next: string | null;
+    while ((next = state.queue.dequeue()) !== null) {
+      delete state.slotTsByName[next];
+      try {
+        deps.dispatch(next);
+      } catch (err) {
+        deps.log(`dispatch failed for ${next}: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+  }
+
+  return wake;
 }
