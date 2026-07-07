@@ -23,6 +23,19 @@ export interface DispatchRecord {
   ts: number;
 }
 
+export interface QueueEntry {
+  name: string;
+  priority: number;
+  /** epoch-ms of the slot that enqueued this job (drives staleness eviction). */
+  slotTs: number;
+}
+
+export interface CompletionRecord {
+  ts: number;
+  exitCode: number;
+  durationMs: number;
+}
+
 export interface Heartbeat {
   ts: number;
   host: string;
@@ -33,4 +46,10 @@ export interface Heartbeat {
   dispatched_minute: Record<string, number>;
   /** jobName → epoch-ms of the newest slot fired (drives catch-up). */
   last_fired: Record<string, number>;
+  /** Persisted priority queue so a restart resumes the backlog. */
+  queue?: QueueEntry[];
+  /** jobName → startedTs of an in-flight run (restored from running/ dir). */
+  running?: Record<string, number>;
+  /** jobName → last completion (exit code + duration) for cooldown + metrics. */
+  last_completed?: Record<string, CompletionRecord>;
 }
