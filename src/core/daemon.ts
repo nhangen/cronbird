@@ -12,6 +12,7 @@
  * `Restart=always` crash inside a fire-minute does not re-run a job.
  */
 import { catchUpFires } from "./catchup";
+import { MAX_CONCURRENT } from "./constants";
 import type { CronMatcher } from "./cron";
 import { RunQueue } from "./run-queue";
 import { dueAt, nextWake, selectRunnable } from "./select";
@@ -200,19 +201,22 @@ export function runOneTick<T>(deps: DaemonDeps<T>, state: TickState<T>): number 
     last_fired: state.lastFired,
   });
 
-  // Minimal drain (Task 4 replaces this with the MAX_CONCURRENT cap): when
-  // nothing is running, drain the queue in priority order; when a run is already
-  // in flight, hold the backlog. Dispatch is fire-and-forget and error-isolated.
-  const runningCount = Object.keys(deps.readCompletions().running).length;
-  if (runningCount < 1) {
-    let next: string | null;
-    while ((next = state.queue.dequeue()) !== null) {
-      delete state.slotTsByName[next];
-      try {
-        deps.dispatch(next);
-      } catch (err) {
-        deps.log(`dispatch failed for ${next}: ${err instanceof Error ? err.message : String(err)}`);
-      }
+  // Drain up to MAX_CONCURRENT running jobs, highest priority first. `running`
+  // is read from the wrapper's `done/`+`running/` state files, so on later ticks
+  // the count reflects jobs that have actually completed — that is what advances
+  // the chain. A throwing dispatch is error-isolated AND does not consume a slot
+  // (a failed spawn never started a job), so one bad job can't wedge the chain.
+  let runningCount = Object.keys(deps.readCompletions().running).length;
+  while (runningCount < MAX_CONCURRENT) {
+    const next = state.queue.dequeue();
+    if (next === null) break;
+    delete state.slotTsByName[next];
+    try {
+      deps.dispatch(next);
+      runningCount++; // only a successful dispatch occupies a slot
+    } catch (err) {
+      deps.log(`dispatch failed for ${next}: ${err instanceof Error ? err.message : String(err)}`);
+      // no increment: the failed spawn didn't start a job — keep draining.
     }
   }
 

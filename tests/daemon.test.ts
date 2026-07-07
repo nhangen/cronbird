@@ -360,19 +360,25 @@ describe("missed-slot catch-up (#143)", () => {
 
 describe("scope gating wired from loaders (B4)", () => {
   test("dispatches enabled each-scope jobs and single-scope jobs owned by this host", async () => {
+    // Both `each-on` and `single-mine` are runnable on this host; `single-theirs`
+    // is owned by mac and must NOT dispatch. Under N=1 serialization the two
+    // runnable jobs drain one-per-tick (the default "nothing running" models the
+    // prior job completing by the next tick), so two ticks drain both — proving
+    // scope selection is correct AND the chain advances.
     const h = harness({
-      nows: [d("2026-06-01T09:00:00Z")],
+      nows: [d("2026-06-01T09:00:00Z"), d("2026-06-01T09:01:00Z")],
       host: "ml-1",
       playbooks: [
         pb({ name: "each-on", cronSchedule: "0 9 * * *", scope: "each" }),
         pb({ name: "single-mine", cronSchedule: "0 9 * * *", scope: "single" }),
         pb({ name: "single-theirs", cronSchedule: "0 9 * * *", scope: "single" }),
       ],
-      enabledByTick: [new Set(["each-on"])],
+      enabledByTick: [new Set(["each-on"]), new Set(["each-on"])],
       owners: { "single-mine": "ml-1", "single-theirs": "mac" },
     });
     await runForever(h.deps);
     expect(h.dispatched.sort()).toEqual(["each-on", "single-mine"]);
+    expect(h.dispatched).not.toContain("single-theirs");
   });
 
   test("last-good topology: a torn topology read keeps the prior tick's owners so an owned single-scope job still fires", async () => {
@@ -446,14 +452,16 @@ describe("dispatch error isolation", () => {
 });
 
 describe("priority enqueue + last_fired-at-enqueue (Task 3)", () => {
-  test("two jobs due in the same tick are enqueued and drained in PRIORITY order, not registry/due order", async () => {
+  test("two jobs due in the same tick drain in PRIORITY order across the serialized chain", async () => {
     const now = d("2026-06-01T09:00:00Z");
     const minuteStart = Math.floor(now.getTime() / 60_000) * 60_000;
-    // Registry/due order is [low, high]; the priority resolver makes `high` the
-    // higher-precedence (lower number). If dispatch still went in due order this
-    // would be ["low","high"]; the priority queue must reorder the drain.
+    // Both are due at 09:00 and enqueued that tick; the priority resolver makes
+    // `high` higher-precedence (lower number). Under N=1 only `high` drains on
+    // tick 1; `low` waits and drains on tick 2 (the default "nothing running"
+    // models `high` completing by the next tick). If dispatch still went in
+    // due/registry order the first out would be `low` — the queue must reorder.
     const h = harness({
-      nows: [now],
+      nows: [now, d("2026-06-01T09:01:00Z")],
       playbooks: [
         pb({ name: "low", cronSchedule: "0 9 * * *" }),
         pb({ name: "high", cronSchedule: "0 9 * * *" }),
@@ -461,13 +469,28 @@ describe("priority enqueue + last_fired-at-enqueue (Task 3)", () => {
       priority: (j) => (j.name === "high" ? 1 : 10),
     });
     await runForever(h.deps);
-    // Nothing running → both drain this tick, but higher priority first.
+    // Serialized: high (tick 1) then low (tick 2), priority order preserved.
     expect(h.dispatched).toEqual(["high", "low"]);
-    // last_fired is stamped for both jobs at ENQUEUE — proven by it already being
-    // in the heartbeat persisted BEFORE dispatch ran.
+    // last_fired is stamped for BOTH at ENQUEUE (tick 1) — proven by both being
+    // in the tick-1 heartbeat persisted BEFORE any dispatch ran.
     expect(h.heartbeats[0]!.last_fired.high).toBe(minuteStart);
     expect(h.heartbeats[0]!.last_fired.low).toBe(minuteStart);
     expect(h.lastFiredAtDispatch().high).toBe(minuteStart);
     expect(h.lastFiredAtDispatch().low).toBe(minuteStart);
+  });
+
+  test("N=1 holds the queue while a job is already running", async () => {
+    // A run is in flight (readCompletions reports one running). Even with a
+    // higher-priority job queued and due, nothing drains this tick — the chain
+    // blocks until the running job completes.
+    const h = harness({
+      nows: [d("2026-06-01T09:00:00Z")],
+      playbooks: [pb({ name: "waiting", cronSchedule: "0 9 * * *" })],
+      readCompletions: () => ({ running: { inflight: 100 }, done: {} }),
+    });
+    await runForever(h.deps);
+    expect(h.dispatched).toEqual([]);
+    // `waiting` was enqueued (last_fired stamped) but held, not dispatched.
+    expect(h.heartbeats[0]!.last_fired.waiting).toBeDefined();
   });
 });
