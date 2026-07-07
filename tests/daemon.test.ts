@@ -587,7 +587,7 @@ describe("restart durability (queue + retry state) — Task A", () => {
     expect(h1.dispatched).toEqual([]); // cap reached by the foreign running job
     const hb = h1.heartbeats.at(-1)!;
     expect((hb.queue ?? []).map((e) => e.name)).toEqual(["a", "b"]);
-    expect(hb.attempts).toEqual({});
+    expect(hb.attempts).toEqual({ a: 0, b: 0 }); // fresh slots → zeroed retry budgets
     expect(hb.last_run).toBeDefined();
 
     // Run 2: restart from hb, nothing running now → drains "a" first (priority 1).
@@ -750,6 +750,39 @@ describe("dependency cycle/unknown-edge rejection at load — Task D", () => {
     await runForever(h.deps);
     expect(h.dispatched).toEqual(["free"]); // d excluded despite higher priority
     expect(h.logs.some((l) => l.includes("unknown job ghost"))).toBe(true);
+  });
+
+  test("an edge to a registered-but-not-runnable upstream is NOT an unknown edge (blocked, not failed)", async () => {
+    // U is registered but inactive → not in the runnable subset this tick. D
+    // depends on U. Validation must use the full registry: D is a valid job whose
+    // upstream simply hasn't succeeded, so eligibility blocks it — it is NOT
+    // hard-failed as an unknown-edge error.
+    const h = harness({
+      nows: [d("2026-07-07T09:00:00Z")],
+      playbooks: [pb({ name: "u", isActive: false, cronSchedule: "0 9 * * *" }), pb({ name: "d", cronSchedule: "0 9 * * *" })],
+      dependencies: (j) => (j.name === "d" ? ["u"] : []),
+      readCompletions: () => ({ running: {}, done: {} }),
+    });
+    await runForever(h.deps);
+    expect(h.dispatched).toEqual([]); // d blocked (u never succeeded), not run
+    expect(h.logs.some((l) => l.includes("unknown job u"))).toBe(false); // NOT flagged unknown
+    expect((h.heartbeats.at(-1)!.queue ?? []).some((e) => e.name === "d")).toBe(true); // queued, waiting
+  });
+});
+
+describe("retry budget resets on a fresh scheduled slot — Task C follow-up", () => {
+  test("a job at the cap gets a fresh three-strike budget when its next slot fires", async () => {
+    // Restart with j already failed (attempts=3). Its 09:00 slot fires this tick
+    // → a new cycle → attempts must reset to 0, or the job gets only one retry
+    // forever and a recovered upstream keeps cascade-cancelling dependents.
+    const h = harness({
+      nows: [d("2026-07-07T09:00:00Z")],
+      playbooks: [pb({ name: "j", cronSchedule: "0 9 * * *" })],
+      startHeartbeat: h0Heartbeat({ attempts: { j: 3 }, done: { j: 1 } }), // last_completed.j.ts = 1
+      readCompletions: () => ({ running: {}, done: { j: { ts: 1, exitCode: 1, durationMs: 0 } } }), // stale, not reprocessed
+    });
+    await runForever(h.deps);
+    expect(h.heartbeats.at(-1)!.attempts.j).toBe(0); // fresh budget
   });
 });
 

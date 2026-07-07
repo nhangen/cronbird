@@ -188,8 +188,11 @@ export function runOneTick<T>(deps: DaemonDeps<T>, state: TickState<T>): number 
   };
   // Reject dependency cycles and edges to unknown jobs at load: fail the whole
   // job (exclude from runnable), not just the edge — a dropped edge would let a
-  // dependent run before an upstream that can never satisfy it.
-  const { invalid, warnings: depWarnings } = validateDependencies(selected, upstreamsOf);
+  // dependent run before an upstream that can never satisfy it. Validate over the
+  // FULL registry, not the runnable subset: an edge to a temporarily disabled /
+  // off-host / inactive but registered job is NOT an unknown-edge error (the
+  // eligibility gate handles a legitimately-absent upstream at runtime).
+  const { invalid, warnings: depWarnings } = validateDependencies(jobs, upstreamsOf);
   for (const w of depWarnings) deps.log(`dependency: ${w}`);
   const runnable = invalid.size ? selected.filter((j) => !invalid.has(j.name)) : selected;
 
@@ -259,6 +262,11 @@ export function runOneTick<T>(deps: DaemonDeps<T>, state: TickState<T>): number 
       continue;
     }
     if (state.queue.enqueue(p.name, deps.priority(job))) {
+      // A fresh scheduled slot is a new cycle → restore the full three-strikes
+      // budget. Without this, a recurring job that once exhausted its retries
+      // stays at the cap forever and gets only a single attempt per later slot,
+      // and a since-recovered upstream keeps cascade-cancelling its dependents.
+      state.attempts[p.name] = 0;
       nextLastFired[p.name] = minuteStart;
       state.slotTsByName[p.name] = minuteStart;
       state.recent.push({ name: p.name, ts: now.getTime() });
@@ -270,6 +278,7 @@ export function runOneTick<T>(deps: DaemonDeps<T>, state: TickState<T>): number 
       continue;
     }
     if (state.queue.enqueue(f.job.name, deps.priority(f.job))) {
+      state.attempts[f.job.name] = 0; // fresh (missed) slot → fresh retry budget
       nextLastFired[f.job.name] = Math.max(nextLastFired[f.job.name] ?? 0, f.slot.getTime());
       state.slotTsByName[f.job.name] = f.slot.getTime();
       state.recent.push({ name: f.job.name, ts: now.getTime() });
