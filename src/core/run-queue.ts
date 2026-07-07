@@ -25,6 +25,13 @@ export class RunQueue {
     return next.name;
   }
 
+  remove(name: string): boolean {
+    if (!this.names.has(name)) return false;
+    this.entries.splice(this.entries.findIndex((e) => e.name === name), 1);
+    this.names.delete(name);
+    return true;
+  }
+
   has(name: string): boolean { return this.names.has(name); }
   size(): number { return this.entries.length; }
   snapshot(): { name: string; priority: number }[] {

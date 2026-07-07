@@ -38,4 +38,13 @@ describe("RunQueue", () => {
     q.enqueue("lo", 10); q.enqueue("hi", 1);
     expect(q.snapshot()).toEqual([{ name: "hi", priority: 1 }, { name: "lo", priority: 10 }]);
   });
+
+  test("remove drops a specific entry without disturbing FIFO of the rest", () => {
+    const q = new RunQueue();
+    q.enqueue("a", 5); q.enqueue("b", 5); q.enqueue("c", 5);
+    expect(q.remove("b")).toBe(true);
+    expect(q.remove("b")).toBe(false); // already gone
+    expect(q.has("b")).toBe(false);
+    expect([q.dequeue(), q.dequeue()]).toEqual(["a", "c"]); // FIFO preserved
+  });
 });

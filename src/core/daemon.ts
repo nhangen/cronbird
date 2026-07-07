@@ -12,8 +12,9 @@
  * `Restart=always` crash inside a fire-minute does not re-run a job.
  */
 import { catchUpFires } from "./catchup";
-import { MAX_CONCURRENT } from "./constants";
+import { MAX_ATTEMPTS, MAX_CONCURRENT } from "./constants";
 import type { CronMatcher } from "./cron";
+import { failedJobs, isEligible, transitiveUpstreamFailed } from "./dependencies";
 import { RunQueue } from "./run-queue";
 import { dueAt, nextWake, selectRunnable } from "./select";
 import type { CompletionRecord, DispatchRecord, Heartbeat, Job, Topology } from "./types";
@@ -57,6 +58,13 @@ export interface DaemonDeps<T = unknown> {
   shouldContinue(): boolean;
   /** Product-supplied precedence; lower number = higher precedence. */
   priority(job: Job<T>): number;
+  /**
+   * Product-supplied upstream job names this job depends on. A dependent is
+   * dispatched only after every upstream has succeeded since the dependent last
+   * ran; when an upstream finally fails, the dependent is cascade-cancelled.
+   * Default resolver returns `[]` (no dependencies).
+   */
+  dependencies(job: Job<T>): string[];
   /**
    * File-based run state written by the dispatch wrapper: in-flight runs
    * (`running/`) and finished runs (`done/`). Fail-safe on a torn/missing read —
@@ -227,10 +235,57 @@ export function runOneTick<T>(deps: DaemonDeps<T>, state: TickState<T>): number 
   // minute (and a same-minute restart) can produce a double-fire.
   for (const [name, mn] of state.guard) if (mn < minute - 1) state.guard.delete(name);
 
+  // Upstream resolver shared by the cascade (here) and the eligibility gate
+  // (drain). Falls back to the full loaded registry so a queued-but-not-runnable
+  // job (restored from the heartbeat) still resolves its edges.
+  const upstreamsOf = (n: string): string[] => {
+    const j = jobByName.get(n) ?? jobs.find((x) => x.name === n);
+    return j ? deps.dependencies(j) : [];
+  };
+  // Cascade: derive the failed set from persisted state, then drop any queued
+  // job whose (transitive) upstream has finally failed. Pure function of state,
+  // so a crash mid-cascade re-derives the same decision next tick. Under N=1 a
+  // dependent is never mid-run when its upstream fails, so this only touches
+  // queued entries — never a live process.
+  // Domain is every job with a retry counter — a failed upstream is usually NOT
+  // itself queued, so deriving the failed set from queued names alone would miss
+  // it. Only jobs at the attempt cap can be "failed", so attempts keys suffice.
+  const failed = failedJobs(Object.keys(state.attempts), state.attempts, completions.done, MAX_ATTEMPTS);
+  for (const e of state.queue.snapshot()) {
+    if (transitiveUpstreamFailed(e.name, upstreamsOf, failed)) {
+      state.queue.remove(e.name);
+      delete state.slotTsByName[e.name];
+      deps.log(`cascade-cancel ${e.name} (upstream failed)`);
+    }
+  }
+
   const wake = nextWake(runnable, now, deps.matcher, deps.maxSleepMs);
-  // Persist the guard and last_fired BEFORE firing. A crash between here and
-  // the spawn must not re-fire on restart, so dispatch is at-most-once: a
-  // crash drops a fire rather than doubling it (safer for write-tier jobs).
+
+  // SELECT the drain set up to MAX_CONCURRENT, highest priority first among the
+  // dependency-eligible. `running` comes from the wrapper's `done/`+`running/`
+  // state, so the count reflects jobs that have actually completed — that is what
+  // advances the chain. Blocked entries stay queued (liveness: a tick with only
+  // blocked jobs idles and re-evaluates next tick), so an independent job drains
+  // past a waiting dependent.
+  //
+  // Selection removes the chosen jobs from the queue and stamps `lastRun` BEFORE
+  // the heartbeat write, so the persisted queue excludes them. This is the
+  // at-most-once boundary: a crash after the write but before (or during) the
+  // spawn drops the fire rather than doubling it — the restored queue no longer
+  // lists a job we committed to spawning. Persist-before-spawn, queue-minus-drain.
+  const toDispatch: string[] = [];
+  let runningCount = Object.keys(completions.running).length;
+  while (runningCount + toDispatch.length < MAX_CONCURRENT) {
+    const candidate = state.queue
+      .snapshot()
+      .find((e) => isEligible(e.name, upstreamsOf(e.name), state.lastSuccess, state.lastRun));
+    if (candidate === undefined) break;
+    state.queue.remove(candidate.name);
+    delete state.slotTsByName[candidate.name];
+    state.lastRun[candidate.name] = now.getTime();
+    toDispatch.push(candidate.name);
+  }
+
   deps.writeHeartbeat({
     ts: now.getTime(),
     host: deps.host,
@@ -247,23 +302,14 @@ export function runOneTick<T>(deps: DaemonDeps<T>, state: TickState<T>): number 
     last_success: state.lastSuccess,
   });
 
-  // Drain up to MAX_CONCURRENT running jobs, highest priority first. `running`
-  // is read from the wrapper's `done/`+`running/` state files, so on later ticks
-  // the count reflects jobs that have actually completed — that is what advances
-  // the chain. A throwing dispatch is error-isolated AND does not consume a slot
-  // (a failed spawn never started a job), so one bad job can't wedge the chain.
-  let runningCount = Object.keys(completions.running).length;
-  while (runningCount < MAX_CONCURRENT) {
-    const next = state.queue.dequeue();
-    if (next === null) break;
-    delete state.slotTsByName[next];
+  // SPAWN after the durable write. A throwing dispatch is error-isolated; the job
+  // was already removed from the queue, so a failed spawn drops the fire (retried
+  // at its next slot) rather than wedging the chain.
+  for (const name of toDispatch) {
     try {
-      deps.dispatch(next);
-      state.lastRun[next] = now.getTime();
-      runningCount++; // only a successful dispatch occupies a slot
+      deps.dispatch(name);
     } catch (err) {
-      deps.log(`dispatch failed for ${next}: ${err instanceof Error ? err.message : String(err)}`);
-      // no increment: the failed spawn didn't start a job — keep draining.
+      deps.log(`dispatch failed for ${name}: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
 

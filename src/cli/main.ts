@@ -79,6 +79,10 @@ async function main(): Promise<void> {
     // Product precedence resolver. No priority source is wired yet, so all jobs
     // share precedence 0 (FIFO) — identical ordering to the pre-queue dispatch.
     priority: () => 0,
+    // No dependency resolver wired yet: every job has zero upstreams, so the
+    // eligibility gate is a no-op and behavior matches the pre-dependency chain.
+    // The CEO layer will read `dependsOn` frontmatter here.
+    dependencies: () => [],
     // File-based run state written by the dispatch wrapper (separate plan). Until
     // that wrapper lands, the fail-safe empty read means "nothing running", so the
     // queue drains every tick — identical to the prior fire-and-forget dispatch.

@@ -18,6 +18,34 @@ const pb = (over: Partial<Job<unknown>>): Job<unknown> => ({
   ...over,
 });
 
+/**
+ * Build a full Heartbeat for restart tests. `queue` restores a backlog;
+ * `attempts` seeds retry counters; `done` maps jobName → exitCode for the
+ * last_completed record (ts fixed at 1). Everything else empties.
+ */
+const h0Heartbeat = (over: {
+  queue?: { name: string; priority: number; slotTs: number }[];
+  attempts?: Record<string, number>;
+  done?: Record<string, number>;
+  last_success?: Record<string, number>;
+}): Heartbeat => ({
+  ts: 0,
+  host: "ml-1",
+  runnable_count: 0,
+  next_wake_ts: 0,
+  last_dispatch: [],
+  dispatched_minute: {},
+  last_fired: {},
+  queue: over.queue ?? [],
+  running: {},
+  last_completed: Object.fromEntries(
+    Object.entries(over.done ?? {}).map(([n, exit]) => [n, { ts: 1, exitCode: exit, durationMs: 0 }]),
+  ),
+  attempts: over.attempts ?? {},
+  last_run: {},
+  last_success: over.last_success ?? {},
+});
+
 interface HarnessOpts {
   nows: Date[];
   playbooks: Job<unknown>[] | (() => { jobs: Job<unknown>[]; warnings: string[] });
@@ -45,6 +73,8 @@ interface HarnessOpts {
   readCompletions?: () => { running: Record<string, number>; done: Record<string, CompletionRecord> };
   /** Per-job cooldown in seconds. Default: () => 0 (no cooldown). */
   cooldownSeconds?: (job: Job<unknown>) => number;
+  /** Upstream resolver; job name → its dependency names. Default: () => []. */
+  dependencies?: (job: Job<unknown>) => string[];
 }
 
 function harness(opts: HarnessOpts) {
@@ -126,6 +156,7 @@ function harness(opts: HarnessOpts) {
     priority: opts.priority ?? (() => 0),
     readCompletions: opts.readCompletions ?? (() => ({ running: {}, done: {} })),
     cooldownSeconds: opts.cooldownSeconds ?? (() => 0),
+    dependencies: opts.dependencies ?? (() => []),
   };
   return {
     deps,
@@ -444,19 +475,21 @@ describe("scope gating wired from loaders (B4)", () => {
 });
 
 describe("dispatch error isolation", () => {
-  test("a throwing dispatch for one job does not kill the loop, the second job still fires, and the failure is logged", async () => {
+  test("a throwing dispatch does not wedge the chain: the failure is logged and the next job fires on the following tick", async () => {
+    // N=1: tick 1 selects "boom" (higher priority) and it throws → dropped, not
+    // left running. tick 2 (same minute, so nothing re-enqueues) finds nothing
+    // running and drains the still-queued "ok". A throw must not stall the chain.
     const h = harness({
-      nows: [d("2026-06-01T09:00:00Z")],
+      nows: [d("2026-06-01T09:00:00Z"), d("2026-06-01T09:00:30Z")],
       playbooks: [
         pb({ name: "boom", cronSchedule: "0 9 * * *" }),
         pb({ name: "ok", cronSchedule: "0 9 * * *" }),
       ],
+      priority: (j) => (j.name === "boom" ? 1 : 2), // boom drains first
     });
-    // Replace dispatch with one that throws for the first job only.
-    let dispatchCalls = 0;
+    // Replace dispatch with one that throws for "boom" only.
     const origDispatch = h.deps.dispatch;
     h.deps.dispatch = (name) => {
-      dispatchCalls++;
       if (name === "boom") throw new Error("ENOENT: no such file");
       origDispatch(name);
     };
@@ -569,5 +602,63 @@ describe("restart durability (queue + retry state) — Task A", () => {
     expect(h2.dispatched).toEqual(["a"]);
     // "a" dispatched → its last_run stamped at run-2's now.
     expect(h2.heartbeats.at(-1)!.last_run!.a).toBe(d("2026-07-07T09:01:00Z").getTime());
+  });
+
+  test("a job dispatched this tick is NOT left in the persisted queue (at-most-once across restart)", async () => {
+    // The persisted queue is the restart source; if a just-dispatched job stayed
+    // in it, a crash after spawn would re-dispatch it — a double-fire on a
+    // write-tier job. The heartbeat must reflect the post-drain queue.
+    const h = harness({
+      nows: [d("2026-07-07T09:00:00Z")],
+      playbooks: [pb({ name: "a", cronSchedule: "0 9 * * *" })],
+      readCompletions: () => ({ running: {}, done: {} }),
+    });
+    await runForever(h.deps);
+    expect(h.dispatched).toEqual(["a"]);
+    expect(h.heartbeats.at(-1)!.queue ?? []).toEqual([]); // drained → not persisted
+  });
+});
+
+describe("dependency gate + cascade in the drain — Task B", () => {
+  test("dependency-blocked job is held; independent drains past it despite lower priority", async () => {
+    const h = harness({
+      nows: [d("2026-07-07T09:00:00Z")],
+      playbooks: [
+        pb({ name: "gate", cronSchedule: "0 9 * * *" }),
+        pb({ name: "dep", cronSchedule: "0 9 * * *" }),
+        pb({ name: "free", cronSchedule: "0 9 * * *" }),
+      ],
+      priority: (j) => (j.name === "dep" ? 1 : j.name === "free" ? 2 : 3),
+      dependencies: (j) => (j.name === "dep" ? ["gate"] : []),
+      readCompletions: () => ({ running: {}, done: {} }),
+    });
+    await runForever(h.deps);
+    // gate never succeeded → dep (priority 1) blocked; the highest-priority
+    // ELIGIBLE entry is free (priority 2). N=1 → exactly one drains this tick.
+    expect(h.dispatched).toEqual(["free"]);
+  });
+
+  test("cascade-cancels a queued dependent when its upstream has finally failed", async () => {
+    const start = d("2026-07-07T09:00:00Z");
+    // dep is a restored backlog entry; gate is off-tick (10:00) so nothing new is
+    // due — isolates the cascade. gate has exhausted its retries and last exited
+    // non-zero → failed.
+    const hb = h0Heartbeat({
+      queue: [{ name: "dep", priority: 1, slotTs: start.getTime() }],
+      attempts: { gate: 3 },
+      done: { gate: 1 },
+    });
+    const h = harness({
+      nows: [start],
+      playbooks: [pb({ name: "gate", cronSchedule: "0 10 * * *" }), pb({ name: "dep", cronSchedule: "0 10 * * *" })],
+      dependencies: (j) => (j.name === "dep" ? ["gate"] : []),
+      startHeartbeat: hb,
+      readCompletions: () => ({ running: {}, done: { gate: { ts: 1, exitCode: 1, durationMs: 0 } } }),
+    });
+    await runForever(h.deps);
+    expect(h.dispatched).toEqual([]); // dep cascade-cancelled, gate not due
+    expect(h.logs.some((l) => l.includes("cascade-cancel dep"))).toBe(true);
+    // dep dropped from the persisted queue too.
+    expect((h.heartbeats.at(-1)!.queue ?? []).some((e) => e.name === "dep")).toBe(false);
   });
 });
