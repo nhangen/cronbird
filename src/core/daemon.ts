@@ -327,7 +327,17 @@ export function runOneTick<T>(deps: DaemonDeps<T>, state: TickState<T>): number 
   while (runningCount + toDispatch.length < MAX_CONCURRENT) {
     const candidate = state.queue
       .snapshot()
-      .find((e) => isEligible(e.name, upstreamsOf(e.name), state.lastSuccess, state.lastRun));
+      // A retry (attempts>0) is an in-cycle continuation whose upstream success
+      // was already consumed when the cycle began, so it bypasses the eligibility
+      // gate. Without this, stamping lastRun[D] at dispatch pushes D past its
+      // upstream's last_success and the three-strikes retry never fires for a
+      // dependent — it would wait for the upstream's NEXT success. A fresh slot
+      // resets attempts to 0, so only genuine retries are exempt.
+      .find(
+        (e) =>
+          (state.attempts[e.name] ?? 0) > 0 ||
+          isEligible(e.name, upstreamsOf(e.name), state.lastSuccess, state.lastRun),
+      );
     if (candidate === undefined) break;
     // Evict a slot older than its schedule's catch-up look-back: don't run a
     // stale 3am slot at noon. Retry re-enqueues carry no slotTsByName entry, so

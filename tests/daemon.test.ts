@@ -724,6 +724,33 @@ describe("three-strikes retry — Task C", () => {
     await runForever(h.deps);
     expect(h.heartbeats.at(-1)!.attempts.j).toBe(1); // unchanged
   });
+
+  test("a dependent's retry is not blocked by its own eligibility gate", async () => {
+    // Regression: stamping lastRun[D] at dispatch pushed D's own timestamp past
+    // the upstream's last_success, so `isEligible` (lastSuccess[U] > lastRun[D])
+    // went false the moment D ran — a failed dependent could not retry until the
+    // upstream succeeded AGAIN. Dependents got one attempt per upstream cycle,
+    // not three. A retry (attempts>0) is an in-cycle continuation and must
+    // bypass the eligibility gate.
+    const base = d("2026-07-07T09:00:00Z").getTime();
+    let call = 0;
+    const h = harness({
+      nows: [d("2026-07-07T09:00:00Z"), d("2026-07-07T09:00:10Z")],
+      // u is registered (edge valid) and already succeeded before this cycle; not due now.
+      playbooks: [pb({ name: "u", cronSchedule: "0 8 * * *" }), pb({ name: "d", cronSchedule: "0 9 * * *" })],
+      dependencies: (j) => (j.name === "d" ? ["u"] : []),
+      startHeartbeat: h0Heartbeat({ last_success: { u: base - 1000 } }),
+      // d fails after its first dispatch; the failure surfaces on tick 2.
+      readCompletions: () => {
+        const done: Record<string, CompletionRecord> = call++ === 0 ? {} : { d: doneRec(1, base + 5) };
+        return { running: {}, done };
+      },
+    });
+    await runForever(h.deps);
+    // With the bug: ["d"] (tick-2 retry gate-blocked). With the fix: ["d","d"].
+    expect(h.dispatched).toEqual(["d", "d"]);
+    expect(h.heartbeats.at(-1)!.attempts.d).toBe(1);
+  });
 });
 
 describe("dependency cycle/unknown-edge rejection at load — Task D", () => {
