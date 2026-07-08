@@ -1,4 +1,4 @@
-export type { Job, Topology, Heartbeat, DispatchRecord } from "./types";
+export type { Job, Topology, Heartbeat, DispatchRecord, QueueEntry, CompletionRecord } from "./types";
 export { createMatcher } from "./cron";
 export type { CronMatcher, MatcherOptions } from "./cron";
 export { selectRunnable, dueAt, nextWake } from "./select";

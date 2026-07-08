@@ -7,7 +7,7 @@
  */
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
-import type { DispatchRecord, Heartbeat } from "../core/index";
+import type { CompletionRecord, DispatchRecord, Heartbeat, QueueEntry } from "../core/index";
 
 export function readHeartbeatFile(path: string): Heartbeat | null {
   if (!existsSync(path)) return null;
@@ -37,7 +37,57 @@ export function readHeartbeatFile(path: string): Heartbeat | null {
     last_dispatch: lastDispatch,
     dispatched_minute: dispatchedMinute,
     last_fired: lastFired,
+    // Scheduler backlog + retry state. Absent (pre-priority-chain heartbeats) or
+    // malformed reads as empty so the daemon simply starts with a clean queue —
+    // never crashes at boot, never fabricates entries.
+    queue: queueEntries(r.queue),
+    running: numericMap(r.running),
+    last_completed: completionMap(r.last_completed),
+    attempts: numericMap(r.attempts),
+    last_run: numericMap(r.last_run),
+    last_success: numericMap(r.last_success),
   };
+}
+
+// Parse the persisted queue, dropping any entry missing a numeric priority/slotTs
+// or a string name — a torn entry must not resurrect as a malformed queue slot.
+function queueEntries(raw: unknown): QueueEntry[] {
+  if (!Array.isArray(raw)) return [];
+  const out: QueueEntry[] = [];
+  for (const e of raw) {
+    if (
+      typeof e === "object" &&
+      e !== null &&
+      typeof (e as QueueEntry).name === "string" &&
+      typeof (e as QueueEntry).priority === "number" &&
+      typeof (e as QueueEntry).slotTs === "number"
+    ) {
+      const { name, priority, slotTs } = e as QueueEntry;
+      out.push({ name, priority, slotTs });
+    }
+  }
+  return out;
+}
+
+// Parse the last-completion map, dropping any record without all three numeric
+// fields so a torn write can't feed a bogus exit code into the retry logic.
+function completionMap(raw: unknown): Record<string, CompletionRecord> {
+  const out: Record<string, CompletionRecord> = {};
+  if (typeof raw === "object" && raw !== null) {
+    for (const [name, v] of Object.entries(raw as Record<string, unknown>)) {
+      if (
+        typeof v === "object" &&
+        v !== null &&
+        typeof (v as CompletionRecord).ts === "number" &&
+        typeof (v as CompletionRecord).exitCode === "number" &&
+        typeof (v as CompletionRecord).durationMs === "number"
+      ) {
+        const { ts, exitCode, durationMs } = v as CompletionRecord;
+        out[name] = { ts, exitCode, durationMs };
+      }
+    }
+  }
+  return out;
 }
 
 // Drop any non-numeric value: a string slipping into the guard or last_fired

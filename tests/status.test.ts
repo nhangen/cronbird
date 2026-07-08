@@ -27,6 +27,12 @@ function hb(lastFired: Record<string, number>, ts = NOW_MS): Heartbeat {
     last_dispatch: [],
     dispatched_minute: {},
     last_fired: lastFired,
+    queue: [],
+    running: {},
+    last_completed: {},
+    attempts: {},
+    last_run: {},
+    last_success: {},
   };
 }
 

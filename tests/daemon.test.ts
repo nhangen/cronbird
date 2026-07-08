@@ -1,9 +1,9 @@
 import { describe, expect, test } from "bun:test";
 import { lookbackForSchedule } from "../src/core/catchup";
 import { createMatcher } from "../src/core/cron";
-import type { Job, Topology, Heartbeat } from "../src/core/types";
+import type { Job, Topology, Heartbeat, CompletionRecord } from "../src/core/types";
 import { type DaemonDeps, runForever } from "../src/core/daemon";
-import { CATCHUP_LOOKBACK_CAP_MS, CATCHUP_LOOKBACK_FLOOR_MS } from "../src/core/constants";
+import { CATCHUP_LOOKBACK_CAP_MS, CATCHUP_LOOKBACK_FLOOR_MS, FATAL_EXIT_CODE } from "../src/core/constants";
 
 const m = createMatcher({ timezone: "UTC" });
 const d = (iso: string) => new Date(iso);
@@ -16,6 +16,34 @@ const pb = (over: Partial<Job<unknown>>): Job<unknown> => ({
   scope: "each",
   metadata: {},
   ...over,
+});
+
+/**
+ * Build a full Heartbeat for restart tests. `queue` restores a backlog;
+ * `attempts` seeds retry counters; `done` maps jobName → exitCode for the
+ * last_completed record (ts fixed at 1). Everything else empties.
+ */
+const h0Heartbeat = (over: {
+  queue?: { name: string; priority: number; slotTs: number }[];
+  attempts?: Record<string, number>;
+  done?: Record<string, number>;
+  last_success?: Record<string, number>;
+}): Heartbeat => ({
+  ts: 0,
+  host: "ml-1",
+  runnable_count: 0,
+  next_wake_ts: 0,
+  last_dispatch: [],
+  dispatched_minute: {},
+  last_fired: {},
+  queue: over.queue ?? [],
+  running: {},
+  last_completed: Object.fromEntries(
+    Object.entries(over.done ?? {}).map(([n, exit]) => [n, { ts: 1, exitCode: exit, durationMs: 0 }]),
+  ),
+  attempts: over.attempts ?? {},
+  last_run: {},
+  last_success: over.last_success ?? {},
 });
 
 interface HarnessOpts {
@@ -39,6 +67,14 @@ interface HarnessOpts {
    * torn read → empty set that tick.
    */
   enabledByTick?: (Set<string> | null)[];
+  /** Product precedence resolver; lower number = higher precedence. Default: () => 0. */
+  priority?: (job: Job<unknown>) => number;
+  /** File-based run state. Default: nothing running / nothing done. */
+  readCompletions?: () => { running: Record<string, number>; done: Record<string, CompletionRecord> };
+  /** Per-job cooldown in seconds. Default: () => 0 (no cooldown). */
+  cooldownSeconds?: (job: Job<unknown>) => number;
+  /** Upstream resolver; job name → its dependency names. Default: () => []. */
+  dependencies?: (job: Job<unknown>) => string[];
 }
 
 function harness(opts: HarnessOpts) {
@@ -117,6 +153,10 @@ function harness(opts: HarnessOpts) {
         ? () => opts.lookback as number
         : (schedule, now) => lookbackForSchedule(schedule, now, m, CATCHUP_LOOKBACK_FLOOR_MS, CATCHUP_LOOKBACK_CAP_MS),
     shouldContinue: () => i < opts.nows.length,
+    priority: opts.priority ?? (() => 0),
+    readCompletions: opts.readCompletions ?? (() => ({ running: {}, done: {} })),
+    cooldownSeconds: opts.cooldownSeconds ?? (() => 0),
+    dependencies: opts.dependencies ?? (() => []),
   };
   return {
     deps,
@@ -191,6 +231,12 @@ describe("double-fire guard", () => {
         last_dispatch: [{ name: "ev", ts: d("2026-06-01T09:00:02Z").getTime() }],
         dispatched_minute: { ev: minute },
         last_fired: {},
+        queue: [],
+        running: {},
+        last_completed: {},
+        attempts: {},
+        last_run: {},
+        last_success: {},
       },
     });
     await runForever(h.deps);
@@ -241,6 +287,12 @@ describe("missed-slot catch-up (#143)", () => {
     last_dispatch: [],
     dispatched_minute: {},
     last_fired: lastFired,
+    queue: [],
+    running: {},
+    last_completed: {},
+    attempts: {},
+    last_run: {},
+    last_success: {},
   });
 
   test("fires once for the newest missed slot after a downtime gap and advances last_fired", async () => {
@@ -354,19 +406,25 @@ describe("missed-slot catch-up (#143)", () => {
 
 describe("scope gating wired from loaders (B4)", () => {
   test("dispatches enabled each-scope jobs and single-scope jobs owned by this host", async () => {
+    // Both `each-on` and `single-mine` are runnable on this host; `single-theirs`
+    // is owned by mac and must NOT dispatch. Under N=1 serialization the two
+    // runnable jobs drain one-per-tick (the default "nothing running" models the
+    // prior job completing by the next tick), so two ticks drain both — proving
+    // scope selection is correct AND the chain advances.
     const h = harness({
-      nows: [d("2026-06-01T09:00:00Z")],
+      nows: [d("2026-06-01T09:00:00Z"), d("2026-06-01T09:01:00Z")],
       host: "ml-1",
       playbooks: [
         pb({ name: "each-on", cronSchedule: "0 9 * * *", scope: "each" }),
         pb({ name: "single-mine", cronSchedule: "0 9 * * *", scope: "single" }),
         pb({ name: "single-theirs", cronSchedule: "0 9 * * *", scope: "single" }),
       ],
-      enabledByTick: [new Set(["each-on"])],
+      enabledByTick: [new Set(["each-on"]), new Set(["each-on"])],
       owners: { "single-mine": "ml-1", "single-theirs": "mac" },
     });
     await runForever(h.deps);
     expect(h.dispatched.sort()).toEqual(["each-on", "single-mine"]);
+    expect(h.dispatched).not.toContain("single-theirs");
   });
 
   test("last-good topology: a torn topology read keeps the prior tick's owners so an owned single-scope job still fires", async () => {
@@ -417,24 +475,374 @@ describe("scope gating wired from loaders (B4)", () => {
 });
 
 describe("dispatch error isolation", () => {
-  test("a throwing dispatch for one job does not kill the loop, the second job still fires, and the failure is logged", async () => {
+  test("a throwing dispatch does not wedge the chain: the failure is logged and the next job fires on the following tick", async () => {
+    // N=1: tick 1 selects "boom" (higher priority) and it throws → dropped, not
+    // left running. tick 2 (same minute, so nothing re-enqueues) finds nothing
+    // running and drains the still-queued "ok". A throw must not stall the chain.
     const h = harness({
-      nows: [d("2026-06-01T09:00:00Z")],
+      nows: [d("2026-06-01T09:00:00Z"), d("2026-06-01T09:00:30Z")],
       playbooks: [
         pb({ name: "boom", cronSchedule: "0 9 * * *" }),
         pb({ name: "ok", cronSchedule: "0 9 * * *" }),
       ],
+      priority: (j) => (j.name === "boom" ? 1 : 2), // boom drains first
     });
-    // Replace dispatch with one that throws for the first job only.
-    let dispatchCalls = 0;
+    // Replace dispatch with one that throws for "boom" only.
     const origDispatch = h.deps.dispatch;
     h.deps.dispatch = (name) => {
-      dispatchCalls++;
       if (name === "boom") throw new Error("ENOENT: no such file");
       origDispatch(name);
     };
     await expect(runForever(h.deps)).resolves.toBeUndefined();
     expect(h.dispatched).toContain("ok");
     expect(h.logs.some((l) => l.includes("boom") && l.includes("ENOENT"))).toBe(true);
+  });
+});
+
+describe("priority enqueue + last_fired-at-enqueue (Task 3)", () => {
+  test("two jobs due in the same tick drain in PRIORITY order across the serialized chain", async () => {
+    const now = d("2026-06-01T09:00:00Z");
+    const minuteStart = Math.floor(now.getTime() / 60_000) * 60_000;
+    // Both are due at 09:00 and enqueued that tick; the priority resolver makes
+    // `high` higher-precedence (lower number). Under N=1 only `high` drains on
+    // tick 1; `low` waits and drains on tick 2 (the default "nothing running"
+    // models `high` completing by the next tick). If dispatch still went in
+    // due/registry order the first out would be `low` — the queue must reorder.
+    const h = harness({
+      nows: [now, d("2026-06-01T09:01:00Z")],
+      playbooks: [
+        pb({ name: "low", cronSchedule: "0 9 * * *" }),
+        pb({ name: "high", cronSchedule: "0 9 * * *" }),
+      ],
+      priority: (j) => (j.name === "high" ? 1 : 10),
+    });
+    await runForever(h.deps);
+    // Serialized: high (tick 1) then low (tick 2), priority order preserved.
+    expect(h.dispatched).toEqual(["high", "low"]);
+    // last_fired is stamped for BOTH at ENQUEUE (tick 1) — proven by both being
+    // in the tick-1 heartbeat persisted BEFORE any dispatch ran.
+    expect(h.heartbeats[0]!.last_fired.high).toBe(minuteStart);
+    expect(h.heartbeats[0]!.last_fired.low).toBe(minuteStart);
+    expect(h.lastFiredAtDispatch().high).toBe(minuteStart);
+    expect(h.lastFiredAtDispatch().low).toBe(minuteStart);
+  });
+
+  test("N=1 holds the queue while a job is already running", async () => {
+    // A run is in flight (readCompletions reports one running). Even with a
+    // higher-priority job queued and due, nothing drains this tick — the chain
+    // blocks until the running job completes.
+    const h = harness({
+      nows: [d("2026-06-01T09:00:00Z")],
+      playbooks: [pb({ name: "waiting", cronSchedule: "0 9 * * *" })],
+      readCompletions: () => ({ running: { inflight: 100 }, done: {} }),
+    });
+    await runForever(h.deps);
+    expect(h.dispatched).toEqual([]);
+    // `waiting` was enqueued (last_fired stamped) but held, not dispatched.
+    expect(h.heartbeats[0]!.last_fired.waiting).toBeDefined();
+  });
+});
+
+describe("cooldown gate at enqueue (Task 3.5)", () => {
+  const now = d("2026-06-01T09:00:00Z");
+  const done = (agoMs: number) => ({
+    running: {},
+    done: { job1: { ts: now.getTime() - agoMs, exitCode: 0, durationMs: 0 } },
+  });
+
+  test("a job whose last completion is within its cooldown is NOT enqueued", async () => {
+    const h = harness({
+      nows: [now],
+      playbooks: [pb({ name: "job1", cronSchedule: "0 9 * * *" })],
+      cooldownSeconds: () => 1800, // 30 min
+      readCompletions: () => done(5 * 60_000), // completed 5 min ago → within cooldown
+    });
+    await runForever(h.deps);
+    expect(h.dispatched).toEqual([]); // gated at enqueue → never dispatched
+    expect(h.logs.some((l) => l.includes("cooldown skip job1"))).toBe(true);
+  });
+
+  test("a job whose last completion is older than its cooldown IS enqueued and dispatched", async () => {
+    const h = harness({
+      nows: [now],
+      playbooks: [pb({ name: "job1", cronSchedule: "0 9 * * *" })],
+      cooldownSeconds: () => 1800,
+      readCompletions: () => done(60 * 60_000), // completed 60 min ago → past cooldown
+    });
+    await runForever(h.deps);
+    expect(h.dispatched).toEqual(["job1"]);
+  });
+});
+
+describe("restart durability (queue + retry state) — Task A", () => {
+  test("queued backlog and retry/timestamps persist and restore", async () => {
+    // Run 1: two due jobs, one already running elsewhere → both queued, none drained.
+    const h1 = harness({
+      nows: [d("2026-07-07T09:00:00Z")],
+      playbooks: [pb({ name: "a", cronSchedule: "0 9 * * *" }), pb({ name: "b", cronSchedule: "0 9 * * *" })],
+      priority: (j) => (j.name === "a" ? 1 : 2),
+      readCompletions: () => ({ running: { x: 1 }, done: {} }),
+    });
+    await runForever(h1.deps);
+    expect(h1.dispatched).toEqual([]); // cap reached by the foreign running job
+    const hb = h1.heartbeats.at(-1)!;
+    expect((hb.queue ?? []).map((e) => e.name)).toEqual(["a", "b"]);
+    expect(hb.attempts).toEqual({ a: 0, b: 0 }); // fresh slots → zeroed retry budgets
+    expect(hb.last_run).toBeDefined();
+
+    // Run 2: restart from hb, nothing running now → drains "a" first (priority 1).
+    const h2 = harness({
+      nows: [d("2026-07-07T09:01:00Z")],
+      playbooks: [pb({ name: "a", cronSchedule: "0 9 * * *" }), pb({ name: "b", cronSchedule: "0 9 * * *" })],
+      priority: (j) => (j.name === "a" ? 1 : 2),
+      startHeartbeat: hb,
+      readCompletions: () => ({ running: {}, done: {} }),
+    });
+    await runForever(h2.deps);
+    expect(h2.dispatched).toEqual(["a"]);
+    // "a" dispatched → its last_run stamped at run-2's now.
+    expect(h2.heartbeats.at(-1)!.last_run!.a).toBe(d("2026-07-07T09:01:00Z").getTime());
+  });
+
+  test("a job dispatched this tick is NOT left in the persisted queue (at-most-once across restart)", async () => {
+    // The persisted queue is the restart source; if a just-dispatched job stayed
+    // in it, a crash after spawn would re-dispatch it — a double-fire on a
+    // write-tier job. The heartbeat must reflect the post-drain queue.
+    const h = harness({
+      nows: [d("2026-07-07T09:00:00Z")],
+      playbooks: [pb({ name: "a", cronSchedule: "0 9 * * *" })],
+      readCompletions: () => ({ running: {}, done: {} }),
+    });
+    await runForever(h.deps);
+    expect(h.dispatched).toEqual(["a"]);
+    expect(h.heartbeats.at(-1)!.queue ?? []).toEqual([]); // drained → not persisted
+  });
+});
+
+describe("dependency gate + cascade in the drain — Task B", () => {
+  test("dependency-blocked job is held; independent drains past it despite lower priority", async () => {
+    const h = harness({
+      nows: [d("2026-07-07T09:00:00Z")],
+      playbooks: [
+        pb({ name: "gate", cronSchedule: "0 9 * * *" }),
+        pb({ name: "dep", cronSchedule: "0 9 * * *" }),
+        pb({ name: "free", cronSchedule: "0 9 * * *" }),
+      ],
+      priority: (j) => (j.name === "dep" ? 1 : j.name === "free" ? 2 : 3),
+      dependencies: (j) => (j.name === "dep" ? ["gate"] : []),
+      readCompletions: () => ({ running: {}, done: {} }),
+    });
+    await runForever(h.deps);
+    // gate never succeeded → dep (priority 1) blocked; the highest-priority
+    // ELIGIBLE entry is free (priority 2). N=1 → exactly one drains this tick.
+    expect(h.dispatched).toEqual(["free"]);
+  });
+
+  test("cascade-cancels a queued dependent when its upstream has finally failed", async () => {
+    const start = d("2026-07-07T09:00:00Z");
+    // dep is a restored backlog entry; gate is off-tick (10:00) so nothing new is
+    // due — isolates the cascade. gate has exhausted its retries and last exited
+    // non-zero → failed.
+    const hb = h0Heartbeat({
+      queue: [{ name: "dep", priority: 1, slotTs: start.getTime() }],
+      attempts: { gate: 3 },
+      done: { gate: 1 },
+    });
+    const h = harness({
+      nows: [start],
+      playbooks: [pb({ name: "gate", cronSchedule: "0 10 * * *" }), pb({ name: "dep", cronSchedule: "0 10 * * *" })],
+      dependencies: (j) => (j.name === "dep" ? ["gate"] : []),
+      startHeartbeat: hb,
+      readCompletions: () => ({ running: {}, done: { gate: { ts: 1, exitCode: 1, durationMs: 0 } } }),
+    });
+    await runForever(h.deps);
+    expect(h.dispatched).toEqual([]); // dep cascade-cancelled, gate not due
+    expect(h.logs.some((l) => l.includes("cascade-cancel dep"))).toBe(true);
+    // dep dropped from the persisted queue too.
+    expect((h.heartbeats.at(-1)!.queue ?? []).some((e) => e.name === "dep")).toBe(false);
+  });
+});
+
+describe("three-strikes retry — Task C", () => {
+  const doneRec = (exit: number, ts: number) => ({ ts, exitCode: exit, durationMs: 0 });
+
+  test("a fresh failure re-enqueues at back of line up to MAX-1, then marks failed", async () => {
+    const base = d("2026-07-07T09:00:00Z").getTime();
+    // Three consecutive failing completions across three same-minute ticks.
+    const doneByTick = [
+      { j: doneRec(1, base + 1) },
+      { j: doneRec(1, base + 2) },
+      { j: doneRec(1, base + 3) },
+    ];
+    let call = 0;
+    const h = harness({
+      nows: [d("2026-07-07T09:00:00Z"), d("2026-07-07T09:00:10Z"), d("2026-07-07T09:00:20Z")],
+      playbooks: [pb({ name: "j", cronSchedule: "0 9 * * *" })],
+      readCompletions: () => ({ running: {}, done: doneByTick[Math.min(call++, 2)]! }),
+    });
+    await runForever(h.deps);
+    const hb = h.heartbeats.at(-1)!;
+    expect(hb.attempts.j).toBe(3); // hit the cap
+    expect((hb.queue ?? []).some((e) => e.name === "j")).toBe(false); // not requeued after the 3rd
+    expect(h.logs.some((l) => l.includes("failed j"))).toBe(true);
+  });
+
+  test("a success resets the attempt counter and stamps last_success", async () => {
+    const base = d("2026-07-07T09:00:00Z").getTime();
+    const h = harness({
+      nows: [d("2026-07-07T09:00:00Z")],
+      playbooks: [pb({ name: "j", cronSchedule: "0 10 * * *" })], // off-tick: only completion matters
+      startHeartbeat: h0Heartbeat({ attempts: { j: 2 } }),
+      readCompletions: () => ({ running: {}, done: { j: doneRec(0, base + 5) } }),
+    });
+    await runForever(h.deps);
+    const hb = h.heartbeats.at(-1)!;
+    expect(hb.attempts.j).toBe(0);
+    expect(hb.last_success.j).toBe(base + 5);
+  });
+
+  test("a fatal exit code fails fast (jumps straight to the cap, no retries consumed)", async () => {
+    const base = d("2026-07-07T09:00:00Z").getTime();
+    const h = harness({
+      nows: [d("2026-07-07T09:00:00Z")],
+      playbooks: [pb({ name: "j", cronSchedule: "0 10 * * *" })],
+      readCompletions: () => ({ running: {}, done: { j: doneRec(FATAL_EXIT_CODE, base + 1) } }),
+    });
+    await runForever(h.deps);
+    expect(h.heartbeats.at(-1)!.attempts.j).toBe(3);
+  });
+
+  test("a completion already reflected in the restored state is not re-counted", async () => {
+    // Restart: attempts.j=1 and last_completed.j is the failure that produced it.
+    // readCompletions still shows that same (stale) done → must NOT bump to 2.
+    const h = harness({
+      nows: [d("2026-07-07T09:00:00Z")],
+      playbooks: [pb({ name: "j", cronSchedule: "0 10 * * *" })],
+      startHeartbeat: h0Heartbeat({ attempts: { j: 1 }, done: { j: 1 } }), // last_completed.j.ts = 1
+      readCompletions: () => ({ running: {}, done: { j: doneRec(1, 1) } }), // same ts=1
+    });
+    await runForever(h.deps);
+    expect(h.heartbeats.at(-1)!.attempts.j).toBe(1); // unchanged
+  });
+
+  test("a dependent's retry is not blocked by its own eligibility gate", async () => {
+    // Regression: stamping lastRun[D] at dispatch pushed D's own timestamp past
+    // the upstream's last_success, so `isEligible` (lastSuccess[U] > lastRun[D])
+    // went false the moment D ran — a failed dependent could not retry until the
+    // upstream succeeded AGAIN. Dependents got one attempt per upstream cycle,
+    // not three. A retry (attempts>0) is an in-cycle continuation and must
+    // bypass the eligibility gate.
+    const base = d("2026-07-07T09:00:00Z").getTime();
+    let call = 0;
+    const h = harness({
+      nows: [d("2026-07-07T09:00:00Z"), d("2026-07-07T09:00:10Z")],
+      // u is registered (edge valid) and already succeeded before this cycle; not due now.
+      playbooks: [pb({ name: "u", cronSchedule: "0 8 * * *" }), pb({ name: "d", cronSchedule: "0 9 * * *" })],
+      dependencies: (j) => (j.name === "d" ? ["u"] : []),
+      startHeartbeat: h0Heartbeat({ last_success: { u: base - 1000 } }),
+      // d fails after its first dispatch; the failure surfaces on tick 2.
+      readCompletions: () => {
+        const done: Record<string, CompletionRecord> = call++ === 0 ? {} : { d: doneRec(1, base + 5) };
+        return { running: {}, done };
+      },
+    });
+    await runForever(h.deps);
+    // With the bug: ["d"] (tick-2 retry gate-blocked). With the fix: ["d","d"].
+    expect(h.dispatched).toEqual(["d", "d"]);
+    expect(h.heartbeats.at(-1)!.attempts.d).toBe(1);
+  });
+});
+
+describe("dependency cycle/unknown-edge rejection at load — Task D", () => {
+  test("a job in a cycle is excluded from dispatch and logged", async () => {
+    const h = harness({
+      nows: [d("2026-07-07T09:00:00Z")],
+      playbooks: [pb({ name: "a", cronSchedule: "0 9 * * *" }), pb({ name: "b", cronSchedule: "0 9 * * *" })],
+      dependencies: (j) => (j.name === "a" ? ["b"] : j.name === "b" ? ["a"] : []), // a↔b cycle
+      readCompletions: () => ({ running: {}, done: {} }),
+    });
+    await runForever(h.deps);
+    expect(h.dispatched).toEqual([]); // both invalid → neither runs
+    expect(h.logs.some((l) => l.includes("dependency:") && l.toLowerCase().includes("cycle"))).toBe(true);
+  });
+
+  test("a job depending on an unknown job is excluded; the valid independent still runs", async () => {
+    const h = harness({
+      nows: [d("2026-07-07T09:00:00Z")],
+      playbooks: [pb({ name: "d", cronSchedule: "0 9 * * *" }), pb({ name: "free", cronSchedule: "0 9 * * *" })],
+      dependencies: (j) => (j.name === "d" ? ["ghost"] : []),
+      priority: (j) => (j.name === "d" ? 1 : 2),
+      readCompletions: () => ({ running: {}, done: {} }),
+    });
+    await runForever(h.deps);
+    expect(h.dispatched).toEqual(["free"]); // d excluded despite higher priority
+    expect(h.logs.some((l) => l.includes("unknown job ghost"))).toBe(true);
+  });
+
+  test("an edge to a registered-but-not-runnable upstream is NOT an unknown edge (blocked, not failed)", async () => {
+    // U is registered but inactive → not in the runnable subset this tick. D
+    // depends on U. Validation must use the full registry: D is a valid job whose
+    // upstream simply hasn't succeeded, so eligibility blocks it — it is NOT
+    // hard-failed as an unknown-edge error.
+    const h = harness({
+      nows: [d("2026-07-07T09:00:00Z")],
+      playbooks: [pb({ name: "u", isActive: false, cronSchedule: "0 9 * * *" }), pb({ name: "d", cronSchedule: "0 9 * * *" })],
+      dependencies: (j) => (j.name === "d" ? ["u"] : []),
+      readCompletions: () => ({ running: {}, done: {} }),
+    });
+    await runForever(h.deps);
+    expect(h.dispatched).toEqual([]); // d blocked (u never succeeded), not run
+    expect(h.logs.some((l) => l.includes("unknown job u"))).toBe(false); // NOT flagged unknown
+    expect((h.heartbeats.at(-1)!.queue ?? []).some((e) => e.name === "d")).toBe(true); // queued, waiting
+  });
+});
+
+describe("retry budget resets on a fresh scheduled slot — Task C follow-up", () => {
+  test("a job at the cap gets a fresh three-strike budget when its next slot fires", async () => {
+    // Restart with j already failed (attempts=3). Its 09:00 slot fires this tick
+    // → a new cycle → attempts must reset to 0, or the job gets only one retry
+    // forever and a recovered upstream keeps cascade-cancelling dependents.
+    const h = harness({
+      nows: [d("2026-07-07T09:00:00Z")],
+      playbooks: [pb({ name: "j", cronSchedule: "0 9 * * *" })],
+      startHeartbeat: h0Heartbeat({ attempts: { j: 3 }, done: { j: 1 } }), // last_completed.j.ts = 1
+      readCompletions: () => ({ running: {}, done: { j: { ts: 1, exitCode: 1, durationMs: 0 } } }), // stale, not reprocessed
+    });
+    await runForever(h.deps);
+    expect(h.heartbeats.at(-1)!.attempts.j).toBe(0); // fresh budget
+  });
+});
+
+describe("staleness eviction — Task E", () => {
+  test("a queued slot older than the lookback is evicted, not dispatched", async () => {
+    const now = d("2026-07-07T09:10:00Z");
+    const staleTs = d("2026-07-07T09:00:00Z").getTime(); // 10 min ago
+    const hb = h0Heartbeat({ queue: [{ name: "stale", priority: 1, slotTs: staleTs }] });
+    const h = harness({
+      nows: [now],
+      playbooks: [pb({ name: "stale", cronSchedule: "0 10 * * *" })], // off-tick: only the restored slot is queued
+      startHeartbeat: hb,
+      lookback: 60_000, // 1 min window → the 10-min-old slot is stale
+      readCompletions: () => ({ running: {}, done: {} }),
+    });
+    await runForever(h.deps);
+    expect(h.dispatched).toEqual([]);
+    expect(h.logs.some((l) => l.includes("evicted stale") && l.includes("stale"))).toBe(true);
+    expect((h.heartbeats.at(-1)!.queue ?? []).some((e) => e.name === "stale")).toBe(false);
+  });
+
+  test("a fresh queued slot within the lookback still dispatches", async () => {
+    const now = d("2026-07-07T09:10:00Z");
+    const freshTs = d("2026-07-07T09:09:30Z").getTime(); // 30s ago
+    const hb = h0Heartbeat({ queue: [{ name: "fresh", priority: 1, slotTs: freshTs }] });
+    const h = harness({
+      nows: [now],
+      playbooks: [pb({ name: "fresh", cronSchedule: "0 10 * * *" })],
+      startHeartbeat: hb,
+      lookback: 60_000,
+      readCompletions: () => ({ running: {}, done: {} }),
+    });
+    await runForever(h.deps);
+    expect(h.dispatched).toEqual(["fresh"]);
   });
 });
