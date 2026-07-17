@@ -6,6 +6,7 @@
     "moduleResolution": "bundler",
     "types": ["bun-types"],
     "strict": true,
+    "noUncheckedIndexedAccess": true,
     "noEmit": true,
     "esModuleInterop": true,
     "skipLibCheck": true,

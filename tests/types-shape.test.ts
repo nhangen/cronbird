@@ -11,8 +11,8 @@ describe("heartbeat shape", () => {
       queue: [q], running: { morning: 5 }, last_completed: { morning: c },
       attempts: {}, last_run: {}, last_success: {},
     };
-    expect(hb.queue[0].name).toBe("morning");
+    expect(hb.queue[0]!.name).toBe("morning");
     expect(hb.running.morning).toBe(5);
-    expect(hb.last_completed.morning.exitCode).toBe(0);
+    expect(hb.last_completed.morning!.exitCode).toBe(0);
   });
 });
