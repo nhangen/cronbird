@@ -4,9 +4,14 @@ export interface Job<T = unknown> {
   cronSchedule: string;
   /** Only active jobs fire. */
   isActive: boolean;
-  /** ["*"] = every host; ["ml-1"] = this host only. */
+  /** Declarative host-intent metadata (the CEO/registry layer emits it, default
+   *  ["*"]). NOT a cronbird runtime gate — {@link ./select.selectRunnable} never
+   *  reads it. Where a job runs is decided by `scope`: an "each" job by this
+   *  host's `enabled` set, a "single" job by its topology `owners` entry. */
   hosts: string[];
-  /** "each" → fires where enabled; "single" → fires on its topology owner. */
+  /** "each" → fires on every host where it's in that host's enabled set;
+   *  "single" → fires only on its topology owner. This — not `hosts` — is the
+   *  runtime gate. */
   scope: "each" | "single";
   /** Product-specific fields the engine ignores (model, tier, runner, ...). */
   metadata: T;

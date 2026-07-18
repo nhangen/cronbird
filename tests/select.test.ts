@@ -57,6 +57,15 @@ describe("selectRunnable — scope gating", () => {
     ];
     expect(selectRunnable(pbs, "ml-1", new Set(["draft","blank","ok"]), {}).map((p) => p.name)).toEqual(["ok"]);
   });
+
+  test("Job.hosts is NOT a runtime gate — a job whose hosts excludes this host still runs when enabled/owned (#12)", () => {
+    // each-scope enabled here, hosts names only another host → still runs (enabled set gates, not hosts).
+    const eachElsewhere = pb({ name: "eachElsewhere", scope: "each", hosts: ["other-host"] });
+    expect(selectRunnable([eachElsewhere], "ml-1", new Set(["eachElsewhere"]), {}).map((p) => p.name)).toEqual(["eachElsewhere"]);
+    // single-scope owned here, hosts names only another host → still runs (owners gates, not hosts).
+    const singleElsewhere = pb({ name: "singleElsewhere", scope: "single", hosts: ["other-host"] });
+    expect(selectRunnable([singleElsewhere], "ml-1", new Set(), { singleElsewhere: "ml-1" }).map((p) => p.name)).toEqual(["singleElsewhere"]);
+  });
 });
 
 describe("dueAt — minute-granular fire set", () => {

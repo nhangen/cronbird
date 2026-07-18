@@ -64,8 +64,8 @@ Fields:
 - `name` — unique job identifier.
 - `cronSchedule` — 5-field cron expression.
 - `isActive` — set `false` to disable without removing.
-- `hosts` — `["*"]` matches any host; or list specific host IDs.
-- `scope` — `"single"` (one host dispatches) or `"each"` (all matching hosts dispatch).
+- `hosts` — declarative host-intent metadata (default `["*"]`). **Not a runtime gate** — cronbird's scheduler never reads it; where a job runs is decided by `scope` (+ the enabled set / topology owners, below). Kept for the generating layer's own bookkeeping.
+- `scope` — `"single"` (fires only on its topology `owners` host) or `"each"` (fires on every host that has it in that host's enabled set, via `enabledPath`).
 - `metadata` — arbitrary data passed through to the dispatch env.
 
 ### 2. Write a config (`cronbird.config.json`)
@@ -113,7 +113,7 @@ When you have multiple hosts and want only one to dispatch a `scope: "single"` j
 
 Set `topologyPath` in your config to point at this file.
 
-For `scope: "each"` jobs, all hosts matching the `hosts` list dispatch independently, regardless of `owners`.
+For `scope: "each"` jobs, `owners` is irrelevant: each host dispatches the job independently **iff the job is in that host's enabled set** (`enabledPath` → a JSON array of job names). The `hosts` field does **not** gate this — enablement is per-host. Leave `enabledPath` `null` for single-host mode (every `each` job runs).
 
 ### Synced heartbeat (E2 offline-owner alert)
 
