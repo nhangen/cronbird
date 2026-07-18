@@ -223,6 +223,45 @@ describe("stale-grace wiring (staleGraceMs = 2 * maxSleepMs)", () => {
   });
 });
 
+describe("stale-daemon alert (#17)", () => {
+  // maxSleepMs 60s → daemon-stale threshold 120s. Both jobs fire every minute.
+  const registry = { jobs: [everyMinute("tick")] };
+  const enabled = ["tick"];
+  const fresh = JSON.stringify({ ts: NOW_MS - 10_000, host: "ml-1", dispatched_minute: {}, last_fired: {} });
+  const old = JSON.stringify({ ts: NOW_MS - 300_000, host: "ml-1", dispatched_minute: {}, last_fired: {} });
+
+  test("status with a fresh heartbeat → exit 0, no alert", () => {
+    const { code, err } = runWith({ registry, enabled, heartbeat: fresh, maxSleepMs: 60_000 }, "status", []);
+    expect(code).toBe(0);
+    expect(err).not.toMatch(/ALERT/);
+  });
+
+  test("status with a stale heartbeat (5m old > 2m threshold) → STALE_EXIT_CODE (69) + stderr ALERT + STALE marker", () => {
+    const { code, out, err } = runWith({ registry, enabled, heartbeat: old, maxSleepMs: 60_000 }, "status", []);
+    expect(code).toBe(69);
+    expect(err).toMatch(/ALERT: daemon heartbeat stale/);
+    expect(err).toContain("scheduler is not running");
+    expect(out).toContain("STALE");
+  });
+
+  test("stale daemon reflected in --json as daemonStale:true", () => {
+    const { code, out } = runWith({ registry, enabled, heartbeat: old, maxSleepMs: 60_000 }, "status", ["--json"]);
+    expect(code).toBe(69);
+    expect(JSON.parse(out).daemonStale).toBe(true);
+  });
+
+  test("stale daemon does NOT fail list / next-runs — those are inventory, not a health check", () => {
+    expect(runWith({ registry, enabled, heartbeat: old, maxSleepMs: 60_000 }, "list", []).code).toBe(0);
+    expect(runWith({ registry, enabled, heartbeat: old, maxSleepMs: 60_000 }, "next-runs", []).code).toBe(0);
+  });
+
+  test("absent heartbeat is NOT a stale alert (never-checked-in warns, exits 0)", () => {
+    const { code, err } = runWith({ registry, enabled, maxSleepMs: 60_000 }, "status", []);
+    expect(code).toBe(0);
+    expect(err).not.toMatch(/ALERT/);
+  });
+});
+
 describe("next-runs edge cases", () => {
   test("runnable job with an invalid schedule is excluded from next-runs but present in list/status", () => {
     const registry = {

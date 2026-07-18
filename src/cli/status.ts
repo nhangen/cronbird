@@ -5,7 +5,7 @@
  * projection of {@link computeStatus}. No scheduling, no writes.
  */
 import { existsSync, readFileSync } from "node:fs";
-import { computeStatus, createMatcher, type JobStatus, type StatusReport } from "../core/index";
+import { computeStatus, createMatcher, STALE_EXIT_CODE, type JobStatus, type StatusReport } from "../core/index";
 import { parseConfig } from "./config";
 import { readHeartbeatFile } from "./heartbeat-file";
 import { fileEnabledProvider, fileJobProvider, fileTopologyProvider } from "./providers";
@@ -82,8 +82,9 @@ export function runStatusCommand(sub: StatusSubcommand, args: string[], deps: St
       heartbeat,
       matcher: createMatcher(),
       now: deps.now(),
-      // Above the wake cap so a just-woken daemon isn't flagged stale.
-      options: { staleGraceMs: 2 * cfg.maxSleepMs },
+      // Above the wake cap so a just-woken daemon isn't flagged stale — for both
+      // per-job staleness and the daemon's own heartbeat.
+      options: { staleGraceMs: 2 * cfg.maxSleepMs, daemonHeartbeatStaleMs: 2 * cfg.maxSleepMs },
     });
   } catch (e) {
     deps.err(`config error: ${e instanceof Error ? e.message : String(e)}\n`);
@@ -91,6 +92,16 @@ export function runStatusCommand(sub: StatusSubcommand, args: string[], deps: St
   }
 
   render(sub, report, parsed, deps);
+
+  // A stopped scheduler should say so without the operator parsing output: the
+  // `status` health check exits nonzero (and logs a distinct alert to stderr) so
+  // a monitor or the CEO swarm sees a dead daemon by exit code alone (#17).
+  // `list`/`next-runs` are inventory views, not health checks — they stay exit 0.
+  if (sub === "status" && report.daemonStale) {
+    // daemonStale ⇒ heartbeatAgeMs is non-null (absence is a warning, not stale).
+    deps.err(`ALERT: daemon heartbeat stale (${fmtRelative(-report.heartbeatAgeMs!)}) on host=${report.host} — scheduler is not running.\n`);
+    return STALE_EXIT_CODE;
+  }
   return 0;
 }
 
@@ -194,7 +205,8 @@ function renderStatus(report: StatusReport, parsed: ParsedArgs, deps: StatusCliD
   const hb = report.heartbeatAgeMs === null
     ? "no heartbeat on disk"
     : `heartbeat ${fmtRelative(-report.heartbeatAgeMs)}`;
-  deps.out(`host=${report.host}  daemon: ${hb}\n\n`);
+  const marker = report.daemonStale ? "STALE — " : "";
+  deps.out(`host=${report.host}  daemon: ${marker}${hb}\n\n`);
   const rows: string[][] = [["NAME", "SCOPE", "RUNNABLE", "LAST FIRE", "NEXT FIRE", "HEALTH"]];
   for (const j of report.jobs) {
     rows.push([

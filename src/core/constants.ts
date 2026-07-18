@@ -26,6 +26,15 @@ export const MAX_ATTEMPTS = 3;
 export const FATAL_EXIT_CODE = 78;
 
 /**
+ * Exit code for `cronbird status` when the daemon's own heartbeat is stale
+ * (presumed dead / not scheduling). Lets an external monitor detect a stopped
+ * scheduler by exit code alone, without parsing output (#17). 69 = EX_UNAVAILABLE
+ * (sysexits.h) — the service is unavailable. Distinct from 1 (config error) and
+ * 2 (usage).
+ */
+export const STALE_EXIT_CODE = 69;
+
+/**
  * Bounds for the per-schedule missed-slot catch-up look-back. The daemon
  * derives each job's look-back from its own cadence and clamps it here: a
  * sub-floor cadence (e.g. 5-minutely) clamps up to the floor, a long cadence
