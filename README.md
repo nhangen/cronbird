@@ -27,7 +27,7 @@ All fields are required unless marked optional.
 |---|---|---|
 | `hostname` | `string` | Host identifier. Use `"auto"` to resolve to the short OS hostname (`os.hostname().split(".")[0]`). |
 | `registryPath` | `string` | Path to the job registry JSON file. Required. |
-| `enabledPath` | `string \| null` | Path to a JSON array of enabled job names. `null` = all jobs enabled (single-host mode). |
+| `enabledPath` | `string \| null` | Path to a JSON array of enabled job names — the gate for `each`-scope jobs on this host. `null` yields an **empty** enabled set, so **no `each`-scope job runs** (it does *not* mean "all enabled"). `single`-scope jobs ignore this; they are gated by topology `owners`. |
 | `topologyPath` | `string \| null` | Path to a topology JSON file (`{ hosts, owners }`). `null` = no topology (single-host mode). |
 | `heartbeatPath` | `string` | Path for the local heartbeat file (double-fire guard + catch-up state). |
 | `syncedHeartbeatDir` | `string \| null` | Directory for a synced per-host heartbeat copy (E2 offline-owner alert). `null` = no synced copy. |
@@ -53,7 +53,7 @@ Paths may use `~` — they are expanded against `$HOME`.
       "cronSchedule": "0 6 * * *",
       "isActive": true,
       "hosts": ["*"],
-      "scope": "single",
+      "scope": "each",
       "metadata": {}
     }
   ]
@@ -68,13 +68,23 @@ Fields:
 - `scope` — `"single"` (fires only on its topology `owners` host) or `"each"` (fires on every host that has it in that host's enabled set, via `enabledPath`).
 - `metadata` — arbitrary data passed through to the dispatch env.
 
-### 2. Write a config (`cronbird.config.json`)
+### 2. Enable the job (`enabled.json`)
+
+An `each`-scope job runs on a host only if it's listed in that host's enabled set. Without this, the daemon runs but dispatches nothing.
+
+```json
+["morning-scan"]
+```
+
+> Single-host note: there is no "all jobs enabled" shortcut. `enabledPath: null` gives an **empty** enabled set, so no `each`-scope job runs — you must list them here. (For a `scope: "single"` job instead, skip `enabled.json` and give it an owner via a topology file — see [Multi-host / topology mode](#multi-host--topology-mode).)
+
+### 3. Write a config (`cronbird.config.json`)
 
 ```json
 {
   "hostname": "auto",
   "registryPath": "~/.cronbird/registry.json",
-  "enabledPath": null,
+  "enabledPath": "~/.cronbird/enabled.json",
   "topologyPath": null,
   "heartbeatPath": "~/.cronbird/heartbeat.json",
   "syncedHeartbeatDir": null,
@@ -86,7 +96,7 @@ Fields:
 }
 ```
 
-### 3. Run
+### 4. Run
 
 ```bash
 bun run src/cli/main.ts cronbird.config.json
@@ -113,7 +123,7 @@ When you have multiple hosts and want only one to dispatch a `scope: "single"` j
 
 Set `topologyPath` in your config to point at this file.
 
-For `scope: "each"` jobs, `owners` is irrelevant: each host dispatches the job independently **iff the job is in that host's enabled set** (`enabledPath` → a JSON array of job names). The `hosts` field does **not** gate this — enablement is per-host. Leave `enabledPath` `null` for single-host mode (every `each` job runs).
+For `scope: "each"` jobs, `owners` is irrelevant: each host dispatches the job independently **iff the job is in that host's enabled set** (`enabledPath` → a JSON array of job names). The `hosts` field does **not** gate this — enablement is per-host. Note `enabledPath: null` yields an *empty* enabled set, so no `each`-scope job runs until you populate it.
 
 ### Synced heartbeat (E2 offline-owner alert)
 
