@@ -46,6 +46,14 @@ export interface StatusReport {
     heartbeatTs: number | null;
     /** `now - heartbeatTs`, or null when there is no heartbeat. */
     heartbeatAgeMs: number | null;
+    /** True when a present heartbeat is older than
+     *  {@link StatusOptions.daemonHeartbeatStaleMs} — the daemon was running and
+     *  stopped. A live scheduler rewrites the heartbeat every wake, so an old one
+     *  means it has stopped scheduling. An absent/corrupt heartbeat (age null) is
+     *  NOT stale here — that "never checked in" condition is surfaced as a CLI
+     *  warning instead, avoiding a first-boot false positive. The `status` CLI
+     *  turns a true value into a nonzero exit (#17). */
+    daemonStale: boolean;
     /** All jobs, sorted by name. */
     jobs: JobStatus[];
 }
@@ -54,6 +62,10 @@ export interface StatusOptions {
      *  its last fire is more than this many ms in the past. Callers should set
      *  this above the daemon's wake cap so a just-woken daemon isn't flagged. */
     staleGraceMs: number;
+    /** The daemon's own heartbeat is "stale" (daemon presumed dead) once it is
+     *  older than this. Set above the wake cap (e.g. 2×maxSleepMs) so a just-woken
+     *  daemon isn't flagged. */
+    daemonHeartbeatStaleMs: number;
 }
 export declare function computeStatus<T>(args: {
     jobs: Job<T>[];

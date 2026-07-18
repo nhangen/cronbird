@@ -40,7 +40,7 @@ const base = {
   host: "ml-1",
   matcher,
   now: NOW,
-  options: { staleGraceMs: 60_000 },
+  options: { staleGraceMs: 60_000, daemonHeartbeatStaleMs: 120_000 },
 };
 
 describe("computeStatus health", () => {
@@ -201,5 +201,26 @@ describe("computeStatus report shape", () => {
       heartbeat: hb({}),
     });
     expect(r.jobs[0]!.health).toBe("inactive");
+  });
+});
+
+describe("computeStatus daemonStale (#17)", () => {
+  // base.options.daemonHeartbeatStaleMs === 120_000.
+  const args = { ...base, jobs: [job({ name: "e" })], enabled: new Set(["e"]), owners: {} };
+
+  test("no heartbeat on disk → NOT daemonStale (never-checked-in is a warning, not a stale alert)", () => {
+    expect(computeStatus({ ...args, heartbeat: null }).daemonStale).toBe(false);
+  });
+
+  test("fresh heartbeat within the threshold → not stale", () => {
+    expect(computeStatus({ ...args, heartbeat: hb({}, NOW_MS - 100_000) }).daemonStale).toBe(false);
+  });
+
+  test("heartbeat exactly at the threshold → not stale (strictly-greater boundary)", () => {
+    expect(computeStatus({ ...args, heartbeat: hb({}, NOW_MS - 120_000) }).daemonStale).toBe(false);
+  });
+
+  test("heartbeat older than the threshold → stale", () => {
+    expect(computeStatus({ ...args, heartbeat: hb({}, NOW_MS - 200_000) }).daemonStale).toBe(true);
   });
 });
