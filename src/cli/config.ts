@@ -43,6 +43,22 @@ function reqStringArray(o: Record<string, unknown>, k: string): string[] {
   return v as string[];
 }
 
+// dispatchArgsTemplate must carry an exact "{job}" element: ShellDispatcher.argv
+// substitutes the job name only for an element strictly === "{job}", so a
+// template without it (or with {job} embedded in a larger string) would dispatch
+// every job with identical, name-less argv — silent wrong-job dispatch (#11).
+function reqDispatchArgsTemplate(o: Record<string, unknown>): string[] {
+  const v = reqStringArray(o, "dispatchArgsTemplate");
+  if (!v.includes("{job}")) {
+    throw new ConfigError(
+      'config.dispatchArgsTemplate must include a "{job}" element — the dispatcher ' +
+        'substitutes the job name only for an exact "{job}" token, so a template without ' +
+        "it dispatches every job with identical, name-less argv",
+    );
+  }
+  return v;
+}
+
 function reqPosInt(o: Record<string, unknown>, k: string): number {
   const v = o[k];
   if (typeof v !== "number" || !Number.isInteger(v) || v <= 0) throw new ConfigError(`config.${k} must be a positive integer`);
@@ -67,7 +83,7 @@ export function parseConfig(raw: string, env: Record<string, string | undefined>
     heartbeatPath: expandTilde(reqString(o, "heartbeatPath"), home),
     syncedHeartbeatDir: (() => { const sd = optString(o, "syncedHeartbeatDir"); return sd ? expandTilde(sd, home) : null; })(),
     dispatchCommand: reqStringArray(o, "dispatchCommand"),
-    dispatchArgsTemplate: reqStringArray(o, "dispatchArgsTemplate"),
+    dispatchArgsTemplate: reqDispatchArgsTemplate(o),
     maxSleepMs: reqPosInt(o, "maxSleepMs"),
     catchupLookbackFloorMs: reqPosInt(o, "catchupLookbackFloorMs"),
     catchupLookbackCapMs: reqPosInt(o, "catchupLookbackCapMs"),
