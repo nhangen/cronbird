@@ -1,10 +1,10 @@
 #!/usr/bin/env bun
 import { readFileSync } from "node:fs";
-import { createMatcher, lookbackForSchedule, runForever, type DaemonDeps } from "../core/index";
+import { createMatcher, lookbackForSchedule, runForever, FATAL_EXIT_CODE, type DaemonDeps } from "../core/index";
 import { parseConfig } from "./config";
 import { fileJobProvider, fileEnabledProvider, fileTopologyProvider } from "./providers";
 import { ShellDispatcher } from "./shell-dispatcher";
-import { readHeartbeatFile, writeHeartbeatFile, writeSyncedHeartbeat, writeHeartbeatWithSync } from "./heartbeat-file";
+import { readHeartbeatFile, writeHeartbeatFile, writeSyncedHeartbeat, writeHeartbeatWithSync, PermanentHeartbeatWriteError } from "./heartbeat-file";
 import { runStatusCommand, STATUS_SUBCOMMANDS, type StatusSubcommand } from "./status";
 import { HELP_TOKENS, usageText } from "./usage";
 
@@ -100,5 +100,8 @@ async function main(): Promise<void> {
 
 main().catch((err) => {
   process.stderr.write(`[${nowStamp()}] cronbird: fatal: ${err instanceof Error ? err.message : String(err)}\n`);
-  process.exit(1);
+  // A permanent local heartbeat-write failure exits with the distinct
+  // FATAL_EXIT_CODE (78, EX_CONFIG) so a respawn loop is visible in the launchd/
+  // systemd log as a config/environment fault, not a generic crash (#13).
+  process.exit(err instanceof PermanentHeartbeatWriteError ? FATAL_EXIT_CODE : 1);
 });

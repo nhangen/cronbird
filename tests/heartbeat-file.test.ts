@@ -4,11 +4,19 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Heartbeat } from "../src/core/index";
 import {
+  isPermanentLocalWriteError,
+  PermanentHeartbeatWriteError,
   readHeartbeatFile,
   writeHeartbeatFile,
   writeHeartbeatWithSync,
   writeSyncedHeartbeat,
 } from "../src/cli/heartbeat-file";
+
+function errno(code: string, message = code): NodeJS.ErrnoException {
+  const e = new Error(message) as NodeJS.ErrnoException;
+  e.code = code;
+  return e;
+}
 
 const dir = mkdtempSync(join(tmpdir(), "cronbird-hb-"));
 afterAll(() => rmSync(dir, { recursive: true, force: true }));
@@ -122,5 +130,71 @@ describe("writeHeartbeatWithSync", () => {
     expect(local).toBe(true);
     expect(synced).toBe(true);
     expect(logs).toEqual([]);
+  });
+
+  test("a permanent local-write failure (EROFS) logs a distinct fatal, throws PermanentHeartbeatWriteError, and never attempts the synced write (#13)", () => {
+    let synced = false;
+    const logs: string[] = [];
+    let thrown: unknown;
+    try {
+      writeHeartbeatWithSync(hb, {
+        writeLocal: () => {
+          throw errno("EROFS", "EROFS: read-only file system, open '/x/heartbeat.json'");
+        },
+        writeSynced: () => {
+          synced = true;
+        },
+        log: (m) => logs.push(m),
+      });
+    } catch (e) {
+      thrown = e;
+    }
+    expect(thrown).toBeInstanceOf(PermanentHeartbeatWriteError);
+    expect((thrown as PermanentHeartbeatWriteError).code).toBe("EROFS");
+    // Loud + distinct — not the swallowed "synced heartbeat write failed" line.
+    expect(logs.some((m) => m.includes("FATAL") && m.includes("permanent local heartbeat-write failure") && m.includes("EROFS"))).toBe(true);
+    // Fail-safe intact: the local write failed, so the synced write is never reached and nothing is dispatched.
+    expect(synced).toBe(false);
+  });
+
+  test("a transient local-write failure (EAGAIN) propagates as-is for a normal respawn, with no permanent banner and no synced write", () => {
+    let synced = false;
+    const logs: string[] = [];
+    let thrown: unknown;
+    try {
+      writeHeartbeatWithSync(hb, {
+        writeLocal: () => {
+          throw errno("EAGAIN", "EAGAIN: resource temporarily unavailable");
+        },
+        writeSynced: () => {
+          synced = true;
+        },
+        log: (m) => logs.push(m),
+      });
+    } catch (e) {
+      thrown = e;
+    }
+    // Not reclassified: the original transient error propagates for a bare respawn.
+    expect(thrown).not.toBeInstanceOf(PermanentHeartbeatWriteError);
+    expect((thrown as NodeJS.ErrnoException).code).toBe("EAGAIN");
+    expect(logs.some((m) => m.includes("permanent"))).toBe(false);
+    expect(synced).toBe(false);
+  });
+});
+
+describe("isPermanentLocalWriteError", () => {
+  test("classifies unrecoverable-without-intervention errno codes as permanent", () => {
+    for (const code of ["EACCES", "EPERM", "EROFS", "ENOSPC", "EDQUOT", "ENOTDIR", "EISDIR", "ENAMETOOLONG"]) {
+      expect(isPermanentLocalWriteError(errno(code))).toBe(true);
+    }
+  });
+
+  test("classifies transient / unknown errno as not permanent", () => {
+    for (const code of ["EAGAIN", "EBUSY", "EINTR", "EIO", "EMFILE"]) {
+      expect(isPermanentLocalWriteError(errno(code))).toBe(false);
+    }
+    expect(isPermanentLocalWriteError(new Error("no code"))).toBe(false);
+    expect(isPermanentLocalWriteError(null)).toBe(false);
+    expect(isPermanentLocalWriteError("EROFS")).toBe(false);
   });
 });
