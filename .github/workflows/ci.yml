@@ -13,3 +13,6 @@ jobs:
       - run: bun install
       - run: bun run typecheck
       - run: bun test
+      - run: bun run build
+      - name: Verify committed dist is up to date
+        run: git diff --exit-code -- dist
