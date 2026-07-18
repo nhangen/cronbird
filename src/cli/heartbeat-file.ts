@@ -122,11 +122,58 @@ export function writeSyncedHeartbeat(path: string, host: string): void {
 }
 
 /**
+ * A local heartbeat write failed with an errno that a bare respawn cannot clear
+ * (read-only fs, out of space/quota, bad perms). Thrown so the daemon entrypoint
+ * can exit with a loud, distinct fatal instead of a bare `exit(1)` that launchd —
+ * which has no `StartLimitBurst` cap — respawns silently every 10s forever (#13).
+ * Still a fatal (the double-fire guard's backing store is unwritable, so the
+ * daemon must not dispatch) — but now an *alerted* one.
+ */
+export class PermanentHeartbeatWriteError extends Error {
+  readonly code: string;
+  constructor(cause: NodeJS.ErrnoException) {
+    super(`permanent local heartbeat-write failure (${cause.code ?? "?"}): ${cause.message}`);
+    this.name = "PermanentHeartbeatWriteError";
+    this.code = cause.code ?? "";
+  }
+}
+
+/**
+ * errno codes for a local-write failure that a respawn cannot fix without
+ * operator action: permission denied, read-only fs, out of space/quota, or a
+ * path that can't be a regular file. Everything else (EAGAIN, EBUSY, EINTR,
+ * EIO, EMFILE…) is treated as transient and left to propagate for a normal
+ * respawn retry.
+ */
+const PERMANENT_WRITE_CODES = new Set([
+  "EACCES",
+  "EPERM",
+  "EROFS",
+  "ENOSPC",
+  "EDQUOT",
+  "ENOTDIR",
+  "EISDIR",
+  "ENAMETOOLONG",
+]);
+
+export function isPermanentLocalWriteError(err: unknown): boolean {
+  if (typeof err !== "object" || err === null) return false;
+  const code = (err as NodeJS.ErrnoException).code;
+  return typeof code === "string" && PERMANENT_WRITE_CODES.has(code);
+}
+
+/**
  * Persist the heartbeat host-local first, then best-effort the synced per-host
  * copy. Invariant: a synced-vault write failure must not crash the daemon or
- * skip the host-local heartbeat (the double-fire guard's backing store). The
- * host-local write happens before the try so it cannot be skipped; a synced
- * failure is swallowed and logged.
+ * skip the host-local heartbeat (the double-fire guard's backing store).
+ *
+ * The host-local write must happen before the daemon dispatches, so a failure
+ * here is always fatal (we never dispatch without a persisted guard). But the
+ * *shape* of that fatal matters: a permanent failure (read-only fs, disk full,
+ * bad perms) that bubbles to a bare `exit(1)` becomes a silent launchd respawn
+ * loop. So classify it — permanent failures get a distinct, loud fatal and a
+ * typed error the entrypoint maps to `FATAL_EXIT_CODE`; transient failures
+ * propagate unchanged for a normal respawn. A synced failure stays swallowed.
  */
 export function writeHeartbeatWithSync(
   hb: Heartbeat,
@@ -136,7 +183,21 @@ export function writeHeartbeatWithSync(
     log: (msg: string) => void;
   },
 ): void {
-  deps.writeLocal(hb);
+  try {
+    deps.writeLocal(hb);
+  } catch (err) {
+    if (isPermanentLocalWriteError(err)) {
+      deps.log(
+        `FATAL: permanent local heartbeat-write failure (${(err as NodeJS.ErrnoException).code}) — ` +
+          "cannot persist the double-fire guard; refusing to dispatch. " +
+          "Fix the filesystem/permissions and restart the daemon.",
+      );
+      throw new PermanentHeartbeatWriteError(err as NodeJS.ErrnoException);
+    }
+    // Transient (EAGAIN/EBUSY/EIO…): keep the fail-safe — propagate so the daemon
+    // exits without dispatching; a respawn may clear it.
+    throw err;
+  }
   try {
     deps.writeSynced();
   } catch (err) {
