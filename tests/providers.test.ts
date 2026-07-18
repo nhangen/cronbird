@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { parseJobsJson, parseEnabledJson, parseTopologyJson, fileJobProvider } from "../src/cli/providers";
+import { parseJobsJson, parseEnabledJson, parseTopologyJson, fileJobProvider, fileEnabledProvider } from "../src/cli/providers";
 
 describe("providers", () => {
   test("parseJobsJson maps registry entries to Job and collects warnings for bad rows", () => {
@@ -23,6 +23,10 @@ describe("providers", () => {
   test("parseTopologyJson returns null on malformed input (reuse last-good)", () => {
     expect(parseTopologyJson("not json")).toBeNull();
     expect(parseTopologyJson(JSON.stringify({ hosts: ["h"], owners: { j: "h" } }))?.owners.j).toBe("h");
+  });
+
+  test("fileEnabledProvider(null) yields an EMPTY set — enabledPath:null is not 'all enabled', so no each-scope job runs (#10)", () => {
+    expect(fileEnabledProvider(null)().size).toBe(0);
   });
 
   test("fileJobProvider fails safe on missing registry file — returns empty jobs + warning", () => {
