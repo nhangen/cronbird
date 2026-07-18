@@ -30,4 +30,17 @@ describe("parseConfig", () => {
     const c = parseConfig(JSON.stringify({ ...base, hostname: "ml-1", registryPath: "~/.cronbird/r.json" }), { HOME: "/home/x" });
     expect(c.registryPath).toBe("/home/x/.cronbird/r.json");
   });
+
+  test("dispatchArgsTemplate missing a {job} token throws ConfigError (would dispatch every job with identical, name-less argv) (#11)", () => {
+    expect(() => parseConfig(JSON.stringify({ ...base, hostname: "ml-1", dispatchArgsTemplate: ["cron", "run"] }), {})).toThrow(ConfigError);
+  });
+
+  test("{job} embedded in a larger string (not an exact element) is rejected — the dispatcher substitutes an exact {job} element only", () => {
+    expect(() => parseConfig(JSON.stringify({ ...base, hostname: "ml-1", dispatchArgsTemplate: ["--job={job}"] }), {})).toThrow(ConfigError);
+  });
+
+  test("an exact {job} element parses and is preserved", () => {
+    const c = parseConfig(JSON.stringify({ ...base, hostname: "ml-1", dispatchArgsTemplate: ["ceo", "cron", "{job}"] }), {});
+    expect(c.dispatchArgsTemplate).toEqual(["ceo", "cron", "{job}"]);
+  });
 });
