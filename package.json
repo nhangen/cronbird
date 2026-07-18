@@ -4,12 +4,20 @@
   "private": true,
   "type": "module",
   "exports": {
-    "./core": "./src/core/index.ts",
-    "./cli": "./src/cli/index.ts"
+    "./core": {
+      "types": "./dist/core/index.d.ts",
+      "default": "./src/core/index.ts"
+    },
+    "./cli": {
+      "types": "./dist/cli/index.d.ts",
+      "default": "./src/cli/index.ts"
+    }
   },
+  "files": ["dist", "src"],
   "scripts": {
     "test": "bun test",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "build": "rm -rf dist && tsc -p tsconfig.build.json"
   },
   "dependencies": {
     "croner": "^9.1.0"

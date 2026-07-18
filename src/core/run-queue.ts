@@ -18,8 +18,8 @@ export class RunQueue {
   }
 
   dequeue(): string | null {
-    if (this.entries.length === 0) return null;
     const next = this.ordered()[0];
+    if (!next) return null;
     this.entries.splice(this.entries.indexOf(next), 1);
     this.names.delete(next.name);
     return next.name;
