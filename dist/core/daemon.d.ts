@@ -4,9 +4,17 @@ import type { CompletionRecord, DispatchRecord, Heartbeat, Job, Topology } from 
 export interface DaemonDeps<T = unknown> {
     now(): Date;
     sleep(ms: number): Promise<void>;
+    /**
+     * A provider may signal a catastrophic load (corrupt/missing registry) two
+     * ways, both meaning "reuse last-good": THROW, or return `ok:false`. The
+     * throwing form is what a directly-wired parser uses; `ok:false` is what the
+     * non-throwing file provider returns so `status` can still render the warning.
+     * `ok` absent/true = a usable registry (possibly empty) → overwrite last-good.
+     */
     loadRegistry(): {
         jobs: Job<T>[];
         warnings: string[];
+        ok?: boolean;
     };
     /**
      * Per-tick read of this host's enabled each-scope jobs.

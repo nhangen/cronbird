@@ -1,16 +1,21 @@
 import { existsSync, readFileSync } from "node:fs";
 import type { Job, Topology } from "../core/index";
 
-export function parseJobsJson(text: string): { jobs: Job[]; warnings: string[] } {
+// `ok` discriminates a CATASTROPHIC load (invalid JSON / jobs-not-array —
+// caller should reuse last-good) from a usable registry (ok:true), including a
+// legitimately-empty one and one with per-job skips. The daemon loop keys its
+// reuse-last-good decision on `ok === false`; string-matching warnings would be
+// fragile and can't tell a corrupt registry from one whose rows all skipped.
+export function parseJobsJson(text: string): { jobs: Job[]; warnings: string[]; ok: boolean } {
   const warnings: string[] = [];
   let parsed: unknown;
   try {
     parsed = JSON.parse(text);
   } catch {
-    return { jobs: [], warnings: ["registry is not valid JSON"] };
+    return { jobs: [], warnings: ["registry is not valid JSON"], ok: false };
   }
   const rows = (parsed as { jobs?: unknown }).jobs;
-  if (!Array.isArray(rows)) return { jobs: [], warnings: ["registry.jobs is not an array"] };
+  if (!Array.isArray(rows)) return { jobs: [], warnings: ["registry.jobs is not an array"], ok: false };
   const jobs: Job[] = [];
   for (const r of rows) {
     const o = r as Record<string, unknown>;
@@ -25,7 +30,7 @@ export function parseJobsJson(text: string): { jobs: Job[]; warnings: string[] }
       metadata: (o.metadata ?? {}) as unknown,
     });
   }
-  return { jobs, warnings };
+  return { jobs, warnings, ok: true };
 }
 
 export function parseEnabledJson(text: string): Set<string> {
@@ -53,10 +58,10 @@ function readIfExists(path: string): string {
   return existsSync(path) ? readFileSync(path, "utf8") : "";
 }
 
-export function fileJobProvider(path: string): () => { jobs: Job[]; warnings: string[] } {
+export function fileJobProvider(path: string): () => { jobs: Job[]; warnings: string[]; ok: boolean } {
   return () => {
     const text = readIfExists(path);
-    if (text === "") return { jobs: [], warnings: [`registry file not found: ${path}`] };
+    if (text === "") return { jobs: [], warnings: [`registry file not found: ${path}`], ok: false };
     return parseJobsJson(text);
   };
 }

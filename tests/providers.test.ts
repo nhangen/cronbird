@@ -38,4 +38,30 @@ describe("providers", () => {
     expect(result!.warnings.length).toBeGreaterThan(0);
     expect(result!.warnings[0]).toContain(missingPath);
   });
+
+  // #1: the result carries an `ok` discriminator so the daemon can tell a
+  // catastrophic load (corrupt/missing → reuse last-good) apart from a
+  // legitimately-empty registry (ok:true, jobs:[] → overwrite last-good).
+  // Non-throwing at the provider boundary: status.ts still renders the warning.
+  test("ok:false marks catastrophic loads (invalid JSON, jobs-not-array, missing file); ok:true otherwise (#1)", () => {
+    expect(parseJobsJson("not json").ok).toBe(false);
+    expect(parseJobsJson(JSON.stringify({ jobs: "nope" })).ok).toBe(false);
+
+    const emptyValid = parseJobsJson(JSON.stringify({ jobs: [] }));
+    expect(emptyValid.ok).toBe(true);
+    expect(emptyValid.jobs).toEqual([]);
+
+    // A structurally-valid registry with a bad row is NOT catastrophic: the
+    // good subset loads and ok stays true (per-job skip, not a load failure).
+    const partial = parseJobsJson(JSON.stringify({ jobs: [
+      { name: "a", cronSchedule: "0 6 * * *" },
+      { name: "", cronSchedule: "0 6 * * *" },
+    ]}));
+    expect(partial.ok).toBe(true);
+    expect(partial.jobs.map((j) => j.name)).toEqual(["a"]);
+    expect(partial.warnings.length).toBe(1);
+
+    const missingPath = join(tmpdir(), `cronbird-ok-missing-${Date.now()}.json`);
+    expect(fileJobProvider(missingPath)().ok).toBe(false);
+  });
 });

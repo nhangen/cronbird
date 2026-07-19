@@ -48,7 +48,7 @@ const h0Heartbeat = (over: {
 
 interface HarnessOpts {
   nows: Date[];
-  playbooks: Job<unknown>[] | (() => { jobs: Job<unknown>[]; warnings: string[] });
+  playbooks: Job<unknown>[] | (() => { jobs: Job<unknown>[]; warnings: string[]; ok?: boolean });
   startHeartbeat?: Heartbeat | null;
   host?: string;
   cap?: number;
@@ -275,6 +275,42 @@ describe("registry resilience", () => {
     // Tick 1 loads ev and dispatches; tick 2's load throws → reuse ev → dispatch again (new minute).
     expect(h.dispatched).toEqual(["ev", "ev"]);
     expect(h.logs.some((l) => l.includes("boom"))).toBe(true);
+  });
+
+  test("a RETURNED catastrophic load (ok:false) reuses last-good too, not just a thrown one (#1)", async () => {
+    let call = 0;
+    const h = harness({
+      nows: [d("2026-06-01T09:00:05Z"), d("2026-06-01T09:01:05Z")],
+      playbooks: () => {
+        call++;
+        // Tick 2 returns the fileJobProvider shape for a corrupt registry —
+        // empty jobs + ok:false, WITHOUT throwing. The daemon must treat this
+        // as reuse-last-good, not a successful load of zero jobs (the clobber
+        // bug). Distinct from the thrown-error path above.
+        if (call === 2) return { jobs: [], warnings: ["registry is not valid JSON"], ok: false };
+        return { jobs: [pb({ name: "ev", cronSchedule: "* * * * *" })], warnings: [] };
+      },
+    });
+    await runForever(h.deps);
+    expect(h.dispatched).toEqual(["ev", "ev"]);
+    expect(h.logs.some((l) => l.includes("not valid JSON"))).toBe(true);
+  });
+
+  test("a valid EMPTY registry (ok:true, jobs:[]) still overwrites last-good — reuse is catastrophic-only (#1)", async () => {
+    let call = 0;
+    const h = harness({
+      nows: [d("2026-06-01T09:00:05Z"), d("2026-06-01T09:01:05Z")],
+      playbooks: () => {
+        call++;
+        // Tick 2 is a legitimately-empty registry (a job was removed), not a
+        // corrupt one. ev must NOT keep firing — guards against an over-fix
+        // that always reuses last-good.
+        if (call === 2) return { jobs: [], warnings: [], ok: true };
+        return { jobs: [pb({ name: "ev", cronSchedule: "* * * * *" })], warnings: [] };
+      },
+    });
+    await runForever(h.deps);
+    expect(h.dispatched).toEqual(["ev"]);
   });
 });
 

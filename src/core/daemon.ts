@@ -26,7 +26,14 @@ const MAX_RECENT_DISPATCH = 20;
 export interface DaemonDeps<T = unknown> {
   now(): Date;
   sleep(ms: number): Promise<void>;
-  loadRegistry(): { jobs: Job<T>[]; warnings: string[] };
+  /**
+   * A provider may signal a catastrophic load (corrupt/missing registry) two
+   * ways, both meaning "reuse last-good": THROW, or return `ok:false`. The
+   * throwing form is what a directly-wired parser uses; `ok:false` is what the
+   * non-throwing file provider returns so `status` can still render the warning.
+   * `ok` absent/true = a usable registry (possibly empty) → overwrite last-good.
+   */
+  loadRegistry(): { jobs: Job<T>[]; warnings: string[]; ok?: boolean };
   /**
    * Per-tick read of this host's enabled each-scope jobs.
    * Returns an empty set on a torn/missing read — fail-safe, so an unreadable
@@ -167,9 +174,13 @@ export function runOneTick<T>(deps: DaemonDeps<T>, state: TickState<T>): number 
   let jobs = state.lastGood;
   try {
     const loaded = deps.loadRegistry();
-    jobs = loaded.jobs;
-    state.lastGood = jobs;
     for (const w of loaded.warnings) deps.log(`registry: ${w}`);
+    if (loaded.ok === false) {
+      deps.log(`registry load failed, reusing last-good (${state.lastGood.length} jobs)`);
+    } else {
+      jobs = loaded.jobs;
+      state.lastGood = jobs;
+    }
   } catch (err) {
     deps.log(`registry load failed, reusing last-good: ${err instanceof Error ? err.message : String(err)}`);
   }
