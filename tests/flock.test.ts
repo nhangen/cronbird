@@ -82,7 +82,7 @@ describe("acquireFlock", () => {
       expect(heldLock).not.toBeNull();
 
       // Spawn daemon via CLI pointing to the same config
-      const r = Bun.spawnSync(["bun", MAIN, cfg], { stdout: "pipe", stderr: "pipe" });
+      const r = Bun.spawnSync(["bun", MAIN, cfg], { stdout: "pipe", stderr: "pipe", timeout: 10_000 });
 
       heldLock?.release();
 
@@ -178,11 +178,18 @@ describe("acquireFlock", () => {
 
     try {
       const proc = Bun.spawn(["bun", MAIN, cfg], { stdout: "pipe", stderr: "pipe" });
-      await Bun.sleep(100);
+      const reader = proc.stderr.getReader();
+      const decoder = new TextDecoder();
+      let stderr = "";
+      const deadline = Date.now() + 10_000;
+      while (!stderr.includes("started —") && Date.now() < deadline) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        stderr += decoder.decode(value);
+      }
       proc.kill(15);
       const exitCode = await proc.exited;
       expect(exitCode).toBe(0);
-      const stderr = await new Response(proc.stderr).text();
       expect(stderr).toContain("started — host=ml-1");
       expect(stderr).not.toContain("another instance is already running");
     } finally {

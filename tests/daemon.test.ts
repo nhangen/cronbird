@@ -292,7 +292,7 @@ describe("double-fire guard", () => {
     // Minute 103: ev fires.
     // Minute 105: prune drops 103 from state.guard because 103 < 105 - 1 = 104.
     // Backward step: clock jumps from 105 back to 103 (where state.guard has no 103 entry).
-    // lastFired >= minuteStart prevents re-firing.
+    // The guard still holds 105 here, so it (not lastFired) blocks the re-fire.
     const h = harness({
       nows: [
         d("2026-06-01T09:03:05Z"), // minute 103: fires
@@ -332,12 +332,11 @@ describe("double-fire guard", () => {
       nows: [
         d("2026-06-02T10:00:05Z"), // +25h in the future: fires and stamps last_fired = 2026-06-02T10:00:00Z
         d("2026-06-01T09:00:05Z"), // clock corrected back to T0: clamps last_fired to now
-        d("2026-06-01T09:01:05Z"), // next minute: fires on schedule!
+        d("2026-06-01T09:01:05Z"), // next minute fires
       ],
       playbooks: [pb({ name: "ev", cronSchedule: "* * * * *" })],
     });
     await runForever(h.deps);
-    // Fires on the warp minute and recovers to fire on 09:01.
     expect(h.dispatched).toEqual(["ev", "ev"]);
     expect(h.logs.some((l) => l.includes("clock warp: clamping future last_fired for ev"))).toBe(true);
   });
