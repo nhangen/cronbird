@@ -10,8 +10,8 @@ export interface CronbirdConfig {
   heartbeatPath: string;
   syncedHeartbeatDir: string | null;
   historyPath: string | null;
-  maxHistoryRecords?: number;
-  historyRetentionMs?: number;
+  maxHistoryRecords: number | null;
+  historyRetentionMs: number | null;
   dispatchCommand: string[];
   dispatchArgsTemplate: string[];
   maxSleepMs: number;
@@ -68,10 +68,10 @@ function reqPosInt(o: Record<string, unknown>, k: string): number {
   return v;
 }
 
-function optPosInt(o: Record<string, unknown>, k: string): number | undefined {
+function optPosInt(o: Record<string, unknown>, k: string): number | null {
   const v = o[k];
-  if (v === null || v === undefined) return undefined;
-  if (typeof v !== "number" || !Number.isInteger(v) || v <= 0) throw new ConfigError(`config.${k} must be a positive integer`);
+  if (v === null || v === undefined) return null;
+  if (typeof v !== "number" || !Number.isInteger(v) || v <= 0) throw new ConfigError(`config.${k} must be a positive integer or null`);
   return v;
 }
 

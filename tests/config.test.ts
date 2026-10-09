@@ -43,4 +43,17 @@ describe("parseConfig", () => {
     const c = parseConfig(JSON.stringify({ ...base, hostname: "ml-1", dispatchArgsTemplate: ["ceo", "cron", "{job}"] }), {});
     expect(c.dispatchArgsTemplate).toEqual(["ceo", "cron", "{job}"]);
   });
+
+  test("history retention fields resolve to null when absent or null, and reject non-positive values", () => {
+    const absent = parseConfig(JSON.stringify({ ...base, hostname: "ml-1" }), {});
+    expect(absent.maxHistoryRecords).toBeNull();
+    expect(absent.historyRetentionMs).toBeNull();
+    const nulls = parseConfig(JSON.stringify({ ...base, hostname: "ml-1", maxHistoryRecords: null, historyRetentionMs: null }), {});
+    expect(nulls.maxHistoryRecords).toBeNull();
+    expect(nulls.historyRetentionMs).toBeNull();
+    const set = parseConfig(JSON.stringify({ ...base, hostname: "ml-1", maxHistoryRecords: 5, historyRetentionMs: 1000 }), {});
+    expect(set.maxHistoryRecords).toBe(5);
+    expect(set.historyRetentionMs).toBe(1000);
+    expect(() => parseConfig(JSON.stringify({ ...base, hostname: "ml-1", maxHistoryRecords: 0 }), {})).toThrow(/positive integer or null/);
+  });
 });

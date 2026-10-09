@@ -96,8 +96,8 @@ async function main(): Promise<void> {
       ? createFileRunHistorySink(
           cfg.historyPath,
           {
-            maxRecords: cfg.maxHistoryRecords,
-            maxAgeMs: cfg.historyRetentionMs,
+            maxRecords: cfg.maxHistoryRecords ?? undefined,
+            maxAgeMs: cfg.historyRetentionMs ?? undefined,
           },
           undefined,
           log,
@@ -108,8 +108,8 @@ async function main(): Promise<void> {
   if (cfg.historyPath) {
     try {
       rotateRunHistoryFile(cfg.historyPath, {
-        maxRecords: cfg.maxHistoryRecords,
-        maxAgeMs: cfg.historyRetentionMs,
+        maxRecords: cfg.maxHistoryRecords ?? undefined,
+        maxAgeMs: cfg.historyRetentionMs ?? undefined,
       });
     } catch (err) {
       log(`initial history rotation warning: ${err instanceof Error ? err.message : String(err)}`);

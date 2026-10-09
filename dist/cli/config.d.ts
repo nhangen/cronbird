@@ -8,8 +8,8 @@ export interface CronbirdConfig {
     heartbeatPath: string;
     syncedHeartbeatDir: string | null;
     historyPath: string | null;
-    maxHistoryRecords?: number;
-    historyRetentionMs?: number;
+    maxHistoryRecords: number | null;
+    historyRetentionMs: number | null;
     dispatchCommand: string[];
     dispatchArgsTemplate: string[];
     maxSleepMs: number;
