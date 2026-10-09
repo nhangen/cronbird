@@ -967,36 +967,50 @@ describe("run history recording — Ticket #3", () => {
     });
   });
 
-  test("running_slots persists across heartbeat and restores on restart", async () => {
+  test("running_slots persists to writeHeartbeat on dispatch and restores on restart", async () => {
     const slot = d("2026-06-01T09:00:00Z").getTime();
-    // Prior heartbeat has job "nine" currently running with slotTs
-    const priorHb = h0Heartbeat({
-      running: { nine: slot },
-      running_slots: { nine: slot },
-    });
+    const dispatchNow = d("2026-06-01T09:00:15Z").getTime(); // delayed dispatch (e.g. queue wait)
 
-    const completedTs = slot + 5_000;
-    const h = harness({
+    // Tick 1: job is due and dispatched
+    const h1 = harness({
+      nows: [new Date(dispatchNow)],
+      playbooks: [pb({ name: "nine", cronSchedule: "0 9 * * *" })],
+    });
+    await runForever(h1.deps);
+
+    expect(h1.dispatched).toEqual(["nine"]);
+    expect(h1.heartbeats.length).toBeGreaterThanOrEqual(1);
+    const hb1 = h1.heartbeats[0]!;
+    // Heartbeat written during dispatch MUST include nine with both slotTs and startedAt
+    expect(hb1.running_slots).toBeDefined();
+    expect(hb1.running_slots!["nine"]).toEqual({ slotTs: slot, startedAt: dispatchNow });
+
+    // Tick 2 (restart): daemon boots with hb1, completion arrives
+    const completedTs = dispatchNow + 5_000;
+    const h2 = harness({
       nows: [d("2026-06-01T09:01:00Z")],
       playbooks: [pb({ name: "nine", cronSchedule: "0 9 * * *" })],
-      startHeartbeat: priorHb,
+      startHeartbeat: hb1,
       readCompletions: () => ({
         running: {},
         done: { nine: { ts: completedTs, exitCode: 0, durationMs: 5_000 } },
       }),
     });
-    await runForever(h.deps);
+    await runForever(h2.deps);
 
-    // Completion was correlated using restored running_slots
-    expect(h.records.length).toBe(1);
-    expect(h.records[0]!).toEqual({
+    // Completion was correlated using restored running_slots preserving distinct slotTs and startedAt
+    expect(h2.records.length).toBe(1);
+    expect(h2.records[0]!).toEqual({
       job: "nine",
       scheduledFor: slot,
-      startedAt: slot,
+      startedAt: dispatchNow,
       finishedAt: completedTs,
       exitCode: 0,
       outcome: "success",
       durationMs: 5_000,
     });
+    // Subsequent heartbeat cleans up completed job
+    const hb2 = h2.heartbeats[0]!;
+    expect(hb2.running_slots?.["nine"]).toBeUndefined();
   });
 });

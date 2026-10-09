@@ -124,6 +124,11 @@ describe("queryRunHistory", () => {
     expect(results.length).toBe(2);
     expect(results.map((r) => r.scheduledFor)).toEqual([baseSlot + 120_000, baseSlot + 60_000]);
   });
+
+  test("returns empty array when limit is <= 0", () => {
+    expect(queryRunHistory([r1, r2, r3], { limit: 0 })).toEqual([]);
+    expect(queryRunHistory([r1, r2, r3], { limit: -1 })).toEqual([]);
+  });
 });
 
 describe("pruneRunHistory", () => {

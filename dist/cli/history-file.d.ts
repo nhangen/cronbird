@@ -23,4 +23,4 @@ export declare function rotateRunHistoryFile(path: string, options?: RunHistoryR
  * Creates an append sink function for DaemonDeps.recordRun that appends each
  * record and periodically rotates the file every `interval` writes.
  */
-export declare function createFileRunHistorySink(path: string, options?: RunHistoryRetentionOptions, interval?: number): (record: RunRecord) => void;
+export declare function createFileRunHistorySink(path: string, options?: RunHistoryRetentionOptions, interval?: number, log?: (msg: string) => void): (record: RunRecord) => void;

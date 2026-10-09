@@ -93,10 +93,15 @@ async function main(): Promise<void> {
     // current behavior (no cooldown enforced in the engine yet).
     cooldownSeconds: () => 0,
     recordRun: cfg.historyPath
-      ? createFileRunHistorySink(cfg.historyPath, {
-          maxRecords: cfg.maxHistoryRecords,
-          maxAgeMs: cfg.historyRetentionMs,
-        })
+      ? createFileRunHistorySink(
+          cfg.historyPath,
+          {
+            maxRecords: cfg.maxHistoryRecords,
+            maxAgeMs: cfg.historyRetentionMs,
+          },
+          undefined,
+          log,
+        )
       : undefined,
   };
 

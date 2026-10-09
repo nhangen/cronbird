@@ -164,10 +164,17 @@ export async function runForever<T>(deps: DaemonDeps<T>): Promise<void> {
         const slots = prior.running_slots ?? {};
         const runs = prior.running ?? {};
         for (const [name, startedAt] of Object.entries(runs)) {
-          rs[name] = { slotTs: slots[name] ?? startedAt, startedAt };
+          const entry = slots[name];
+          const slotTs = typeof entry === "number" ? entry : (entry?.slotTs ?? startedAt);
+          const sAt = typeof entry === "object" && entry !== null ? entry.startedAt : startedAt;
+          rs[name] = { slotTs, startedAt: sAt };
         }
-        for (const [name, slotTs] of Object.entries(slots)) {
-          if (!rs[name]) rs[name] = { slotTs, startedAt: runs[name] ?? slotTs };
+        for (const [name, entry] of Object.entries(slots)) {
+          if (!rs[name]) {
+            const slotTs = typeof entry === "number" ? entry : entry.slotTs;
+            const startedAt = typeof entry === "number" ? (runs[name] ?? slotTs) : entry.startedAt;
+            rs[name] = { slotTs, startedAt };
+          }
         }
       }
       return rs;
@@ -409,6 +416,7 @@ export function runOneTick<T>(deps: DaemonDeps<T>, state: TickState<T>): number 
     delete state.slotTsByName[candidate.name];
     state.lastRun[candidate.name] = now.getTime();
     toDispatch.push({ name: candidate.name, slotTs });
+    state.runningSlots[candidate.name] = { slotTs, startedAt: now.getTime() };
   }
 
   deps.writeHeartbeat({
@@ -421,7 +429,9 @@ export function runOneTick<T>(deps: DaemonDeps<T>, state: TickState<T>): number 
     last_fired: state.lastFired,
     queue: state.queue.snapshot().map((e) => ({ ...e, slotTs: state.slotTsByName[e.name] ?? now.getTime() })),
     running: completions.running,
-    running_slots: Object.fromEntries(Object.entries(state.runningSlots).map(([k, v]) => [k, v.slotTs])),
+    running_slots: Object.fromEntries(
+      Object.entries(state.runningSlots).map(([k, v]) => [k, { slotTs: v.slotTs, startedAt: v.startedAt }])
+    ),
     last_completed: completions.done,
     attempts: state.attempts,
     last_run: state.lastRun,
@@ -432,14 +442,13 @@ export function runOneTick<T>(deps: DaemonDeps<T>, state: TickState<T>): number 
   // was already removed from the queue, so a failed spawn drops the fire (retried
   // at its next slot) rather than wedging the chain.
   for (const item of toDispatch) {
-    const startedAt = now.getTime();
-    state.runningSlots[item.name] = { slotTs: item.slotTs, startedAt };
+    const info = state.runningSlots[item.name] ?? { slotTs: item.slotTs, startedAt: now.getTime() };
     if (deps.recordRun) {
       try {
         deps.recordRun({
           job: item.name,
-          scheduledFor: item.slotTs,
-          startedAt,
+          scheduledFor: info.slotTs,
+          startedAt: info.startedAt,
           finishedAt: null,
           exitCode: null,
           outcome: "running",
@@ -452,21 +461,21 @@ export function runOneTick<T>(deps: DaemonDeps<T>, state: TickState<T>): number 
     try {
       deps.dispatch(item.name);
     } catch (err) {
-      deps.log(`dispatch failed for ${item.name}: ${err instanceof Error ? err.message : String(err)}`);
       delete state.runningSlots[item.name];
+      deps.log(`dispatch failed for ${item.name}: ${err instanceof Error ? err.message : String(err)}`);
       if (deps.recordRun) {
         try {
           deps.recordRun({
             job: item.name,
-            scheduledFor: item.slotTs,
-            startedAt,
+            scheduledFor: info.slotTs,
+            startedAt: info.startedAt,
             finishedAt: now.getTime(),
             exitCode: 1,
             outcome: "failure",
             durationMs: 0,
           });
-        } catch (recErr) {
-          deps.log(`recordRun failure failed for ${item.name}: ${recErr instanceof Error ? recErr.message : String(recErr)}`);
+        } catch (rErr) {
+          deps.log(`recordRun failure recording failed for ${item.name}: ${rErr instanceof Error ? rErr.message : String(rErr)}`);
         }
       }
     }

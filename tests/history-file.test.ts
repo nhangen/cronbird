@@ -1,5 +1,5 @@
 import { afterAll, describe, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -81,15 +81,16 @@ describe("history-file round-trip & append", () => {
 });
 
 describe("history-file rotation & sink", () => {
-  test("rotateRunHistoryFile bounds file size and writes ascending order", () => {
+  test("rotateRunHistoryFile bounds file size and writes ascending order even from unordered appends", () => {
     const file = join(dir, "rotate.jsonl");
     const r1 = rec({ scheduledFor: baseSlot + 10 });
     const r2 = rec({ scheduledFor: baseSlot + 20 });
     const r3 = rec({ scheduledFor: baseSlot + 30 });
 
+    // Append in non-chronological order: r3, r1, r2
+    appendRunRecordFile(file, r3);
     appendRunRecordFile(file, r1);
     appendRunRecordFile(file, r2);
-    appendRunRecordFile(file, r3);
 
     // Rotate with maxRecords = 2
     rotateRunHistoryFile(file, { maxRecords: 2, maxAgeMs: 1_000_000 }, baseSlot + 100);
@@ -102,10 +103,31 @@ describe("history-file rotation & sink", () => {
     expect(loaded.map((r) => r.scheduledFor)).toEqual([baseSlot + 20, baseSlot + 30]);
   });
 
+  test("rotateRunHistoryFile does not overwrite non-empty file when read yields 0 records", () => {
+    const file = join(dir, "corrupt.jsonl");
+    const corruptContent = "not-json\nalso-corrupt\n";
+    writeFileSync(file, corruptContent);
+
+    // Rotation should abort and not truncate the file to 0 bytes
+    rotateRunHistoryFile(file, { maxRecords: 10 });
+    expect(readFileSync(file, "utf8")).toBe(corruptContent);
+  });
+
+  test("writeRunHistoryFile sorts records chronologically ascending", () => {
+    const file = join(dir, "write-ordered.jsonl");
+    const r1 = rec({ scheduledFor: baseSlot + 10 });
+    const r2 = rec({ scheduledFor: baseSlot + 20 });
+    writeRunHistoryFile(file, [r2, r1]);
+
+    const loaded = readRunHistoryFile(file);
+    expect(loaded.map((r) => r.scheduledFor)).toEqual([baseSlot + 10, baseSlot + 20]);
+  });
+
   test("createFileRunHistorySink writes records and triggers periodic rotation", () => {
     const file = join(dir, "sink.jsonl");
+    const logs: string[] = [];
     // Sink configured with rotation interval = 3 writes and maxRecords = 2
-    const sink = createFileRunHistorySink(file, { maxRecords: 2, maxAgeMs: 1_000_000 }, 3);
+    const sink = createFileRunHistorySink(file, { maxRecords: 2, maxAgeMs: 1_000_000 }, 3, (msg) => logs.push(msg));
 
     sink(rec({ scheduledFor: baseSlot + 1 }));
     sink(rec({ scheduledFor: baseSlot + 2 }));
@@ -117,5 +139,25 @@ describe("history-file rotation & sink", () => {
     const loaded = readRunHistoryFile(file);
     expect(loaded.length).toBe(2);
     expect(loaded.map((r) => r.scheduledFor)).toEqual([baseSlot + 2, baseSlot + 3]);
+    expect(logs.length).toBe(0);
+  });
+
+  test("createFileRunHistorySink logs rotation error on failure", () => {
+    const readOnlyDir = join(dir, "readonly-dir");
+    mkdirSync(readOnlyDir);
+    const file = join(readOnlyDir, "sink.jsonl");
+    appendRunRecordFile(file, rec({ scheduledFor: baseSlot + 1 }));
+    appendRunRecordFile(file, rec({ scheduledFor: baseSlot + 2 }));
+
+    chmodSync(readOnlyDir, 0o555);
+    try {
+      const logs: string[] = [];
+      const sink = createFileRunHistorySink(file, { maxRecords: 1 }, 1, (msg) => logs.push(msg));
+      sink(rec({ scheduledFor: baseSlot + 3 }));
+      expect(logs.length).toBe(1);
+      expect(logs[0]!).toContain("history rotation failed");
+    } finally {
+      chmodSync(readOnlyDir, 0o755);
+    }
   });
 });

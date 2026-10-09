@@ -7,7 +7,7 @@
  * prunes stale/overflow records and rewrites the file atomically via tmp+rename
  * in ascending chronological order.
  */
-import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import {
   HISTORY_ROTATION_INTERVAL_WRITES,
@@ -82,9 +82,9 @@ function isValidRunRecord(o: unknown): o is RunRecord {
   if (typeof r.job !== "string" || r.job.length === 0) return false;
   if (typeof r.scheduledFor !== "number" || !Number.isFinite(r.scheduledFor)) return false;
   if (typeof r.startedAt !== "number" || !Number.isFinite(r.startedAt)) return false;
-  if (r.finishedAt !== null && typeof r.finishedAt !== "number") return false;
-  if (r.exitCode !== null && typeof r.exitCode !== "number") return false;
-  if (r.durationMs !== null && typeof r.durationMs !== "number") return false;
+  if (r.finishedAt !== null && r.finishedAt !== undefined && (typeof r.finishedAt !== "number" || !Number.isFinite(r.finishedAt))) return false;
+  if (r.exitCode !== null && r.exitCode !== undefined && (typeof r.exitCode !== "number" || !Number.isFinite(r.exitCode))) return false;
+  if (r.durationMs !== null && r.durationMs !== undefined && (typeof r.durationMs !== "number" || !Number.isFinite(r.durationMs))) return false;
   if (r.outcome !== "running" && r.outcome !== "success" && r.outcome !== "failure") return false;
   return true;
 }
@@ -118,7 +118,19 @@ export function rotateRunHistoryFile(
   now: number = Date.now(),
 ): void {
   if (!existsSync(path)) return;
+  let stat;
+  try {
+    stat = statSync(path);
+  } catch {
+    return;
+  }
+  if (stat.size === 0) return;
   const current = readRunHistoryFile(path);
+  if (current.length === 0) {
+    // Existing non-empty file yielded 0 records (e.g. transient read error or unparseable).
+    // Abort rotation to avoid truncating valid historical records.
+    return;
+  }
   const pruned = pruneRunHistory(current, options, now);
   writeRunHistoryFile(path, pruned);
 }
@@ -131,6 +143,7 @@ export function createFileRunHistorySink(
   path: string,
   options: RunHistoryRetentionOptions = {},
   interval: number = HISTORY_ROTATION_INTERVAL_WRITES,
+  log?: (msg: string) => void,
 ): (record: RunRecord) => void {
   let appendsSinceRotation = 0;
 
@@ -141,8 +154,8 @@ export function createFileRunHistorySink(
       appendsSinceRotation = 0;
       try {
         rotateRunHistoryFile(path, options);
-      } catch {
-        // Rotation failure should not throw to daemon loop
+      } catch (err) {
+        log?.(`history rotation failed: ${err instanceof Error ? err.message : String(err)}`);
       }
     }
   };

@@ -64,7 +64,6 @@ export function mergeRunRecords(records: RunRecord[]): RunRecord[] {
     byKey.set(key, {
       ...existing,
       ...r,
-      // If the incoming update completed the run, ensure finishedAt/exitCode/durationMs are adopted
       finishedAt: r.finishedAt ?? existing.finishedAt,
       exitCode: r.exitCode ?? existing.exitCode,
       durationMs: r.durationMs ?? existing.durationMs,
@@ -90,13 +89,13 @@ export function queryRunHistory(records: RunRecord[], query: RunHistoryQuery = {
     return true;
   });
 
-  // Sort descending by scheduledFor (tie-break by startedAt descending)
   filtered.sort((a, b) => {
     if (b.scheduledFor !== a.scheduledFor) return b.scheduledFor - a.scheduledFor;
     return b.startedAt - a.startedAt;
   });
 
-  if (query.limit !== undefined && query.limit > 0) {
+  if (query.limit !== undefined) {
+    if (query.limit <= 0) return [];
     return filtered.slice(0, query.limit);
   }
 
@@ -117,17 +116,13 @@ export function pruneRunHistory(
   const cutoff = now - maxAgeMs;
 
   const merged = mergeRunRecords(records);
-
-  // 1. Drop records older than the age cutoff (based on scheduledFor)
   const unexpired = merged.filter((r) => r.scheduledFor >= cutoff);
 
-  // 2. Sort ascending chronologically
   unexpired.sort((a, b) => {
     if (a.scheduledFor !== b.scheduledFor) return a.scheduledFor - b.scheduledFor;
     return a.startedAt - b.startedAt;
   });
 
-  // 3. Keep at most maxRecords newest
   if (unexpired.length > maxRecords) {
     return unexpired.slice(unexpired.length - maxRecords);
   }

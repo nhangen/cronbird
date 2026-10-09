@@ -493,9 +493,26 @@ describe("history subcommand", () => {
     expect(parsed[0].job).toBe("bravo");
   });
 
-  test("--since and --limit filter history correctly", () => {
-    // --since 45m selects only alpha at -30m and bravo at -10m
-    const { code, out } = runWith({ history: sampleHistory }, "history", ["--since", "45m", "--limit", "1", "--json"]);
+  test("--since filters out records older than threshold", () => {
+    // --since 45m selects only bravo at -10m and alpha at -30m, excluding alpha at -60m
+    const { code, out } = runWith({ history: sampleHistory }, "history", ["--since", "45m", "--json"]);
+    expect(code).toBe(0);
+    const parsed = JSON.parse(out);
+    expect(parsed.length).toBe(2);
+    expect(parsed.map((r: { job: string }) => r.job)).toEqual(["bravo", "alpha"]);
+  });
+
+  test("--until filters out records newer than threshold", () => {
+    // --until 20m selects only alpha at -30m and alpha at -60m, excluding bravo at -10m
+    const { code, out } = runWith({ history: sampleHistory }, "history", ["--until", "20m", "--json"]);
+    expect(code).toBe(0);
+    const parsed = JSON.parse(out);
+    expect(parsed.length).toBe(2);
+    expect(parsed.every((r: { job: string }) => r.job === "alpha")).toBe(true);
+  });
+
+  test("--limit restricts maximum returned records", () => {
+    const { code, out } = runWith({ history: sampleHistory }, "history", ["--limit", "1", "--json"]);
     expect(code).toBe(0);
     const parsed = JSON.parse(out);
     expect(parsed.length).toBe(1);
