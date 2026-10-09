@@ -5,14 +5,15 @@
  * projection of {@link computeStatus}. No scheduling, no writes.
  */
 import { existsSync, readFileSync } from "node:fs";
-import { computeStatus, createMatcher, STALE_EXIT_CODE, type JobStatus, type StatusReport } from "../core/index";
+import { computeStatus, createMatcher, queryRunHistory, STALE_EXIT_CODE, type JobStatus, type RunRecord, type StatusReport } from "../core/index";
 import { parseConfig } from "./config";
 import { readHeartbeatFile } from "./heartbeat-file";
+import { readRunHistoryFile } from "./history-file";
 import { fileEnabledProvider, fileJobProvider, fileTopologyProvider } from "./providers";
 
-export type StatusSubcommand = "status" | "list" | "next-runs";
+export type StatusSubcommand = "status" | "list" | "next-runs" | "history";
 
-export const STATUS_SUBCOMMANDS: ReadonlySet<string> = new Set(["status", "list", "next-runs"]);
+export const STATUS_SUBCOMMANDS: ReadonlySet<string> = new Set(["status", "list", "next-runs", "history"]);
 
 export interface StatusCliDeps {
   now: () => Date;
@@ -25,6 +26,10 @@ interface ParsedArgs {
   configPath: string | undefined;
   json: boolean;
   withinMs: number | null;
+  job: string | undefined;
+  since: number | null;
+  until: number | null;
+  limit: number | null;
 }
 
 /** Parse `Nd`/`Nh`/`Nm`/`Ns` into ms. Returns null on any other shape. */
@@ -37,9 +42,25 @@ function parseDuration(s: string | undefined): number | null {
   return n * unit;
 }
 
+/** Parse duration string, epoch-ms, or ISO date string into epoch-ms. */
+function parseTimeFilter(s: string | undefined, nowMs: number): number | null {
+  if (!s) return null;
+  const trimmed = s.trim();
+  const dur = parseDuration(trimmed);
+  if (dur !== null) return nowMs - dur;
+  if (/^\d+$/.test(trimmed)) {
+    const n = Number(trimmed);
+    if (Number.isFinite(n)) return n;
+  }
+  const parsed = Date.parse(trimmed);
+  if (!Number.isNaN(parsed)) return parsed;
+  return null;
+}
+
 function usage(sub: StatusSubcommand): string {
-  const within = sub === "next-runs" ? " [--within <dur>]" : "";
-  return `usage: cronbird ${sub} <config.json> [--json]${within}\n`;
+  if (sub === "next-runs") return `usage: cronbird next-runs <config.json> [--json] [--within <dur>]\n`;
+  if (sub === "history") return `usage: cronbird history <config.json> [--json] [--job <name>] [--since <time>] [--until <time>] [--limit <n>]\n`;
+  return `usage: cronbird ${sub} <config.json> [--json]\n`;
 }
 
 export function runStatusCommand(sub: StatusSubcommand, args: string[], deps: StatusCliDeps): number {
@@ -50,6 +71,28 @@ export function runStatusCommand(sub: StatusSubcommand, args: string[], deps: St
   if (!configPath) {
     deps.err(usage(sub));
     return 2;
+  }
+
+  if (sub === "history") {
+    try {
+      const cfg = parseConfig(readFileSync(configPath, "utf8"), deps.env);
+      if (cfg.historyPath === null) {
+        deps.err(`error: config.historyPath is not configured in ${configPath}\n`);
+        return 1;
+      }
+      const rawRecords = readRunHistoryFile(cfg.historyPath);
+      const records = queryRunHistory(rawRecords, {
+        job: parsed.job,
+        since: parsed.since ?? undefined,
+        until: parsed.until ?? undefined,
+        limit: parsed.limit ?? undefined,
+      });
+      renderHistory(records, parsed, deps);
+      return 0;
+    } catch (e) {
+      deps.err(`config error: ${e instanceof Error ? e.message : String(e)}\n`);
+      return 1;
+    }
   }
 
   let report: StatusReport;
@@ -74,6 +117,7 @@ export function runStatusCommand(sub: StatusSubcommand, args: string[], deps: St
     if (heartbeat === null && existsSync(cfg.heartbeatPath)) {
       deps.err(`warning: heartbeat file present but unparseable: ${cfg.heartbeatPath}\n`);
     }
+    const history = cfg.historyPath ? readRunHistoryFile(cfg.historyPath) : undefined;
     report = computeStatus({
       jobs,
       host: cfg.hostname,
@@ -85,6 +129,7 @@ export function runStatusCommand(sub: StatusSubcommand, args: string[], deps: St
       // Above the wake cap so a just-woken daemon isn't flagged stale — for both
       // per-job staleness and the daemon's own heartbeat.
       options: { staleGraceMs: 2 * cfg.maxSleepMs, daemonHeartbeatStaleMs: 2 * cfg.maxSleepMs },
+      history,
     });
   } catch (e) {
     deps.err(`config error: ${e instanceof Error ? e.message : String(e)}\n`);
@@ -108,18 +153,74 @@ export function runStatusCommand(sub: StatusSubcommand, args: string[], deps: St
 function parseFlags(sub: StatusSubcommand, args: string[], deps: StatusCliDeps): ParsedArgs | number {
   let json = false;
   let withinMs: number | null = null;
+  let job: string | undefined;
+  let since: number | null = null;
+  let until: number | null = null;
+  let limit: number | null = null;
   const positional: string[] = [];
+
   for (let i = 0; i < args.length; i++) {
     const a = args[i]!;
     if (a === "--json") {
       json = true;
     } else if (a === "--within") {
+      if (sub !== "next-runs") {
+        deps.err(`--within is only valid for next-runs\n`);
+        return 2;
+      }
       const ms = parseDuration(args[++i]);
       if (ms === null) {
         deps.err(`invalid --within duration: ${JSON.stringify(args[i])} (use e.g. 30m, 2h, 1d)\n`);
         return 2;
       }
       withinMs = ms;
+    } else if (a === "--job") {
+      if (sub !== "history") {
+        deps.err(`--job is only valid for history\n`);
+        return 2;
+      }
+      const val = args[++i];
+      if (!val || val.startsWith("--")) {
+        deps.err(`missing argument for --job\n`);
+        return 2;
+      }
+      job = val;
+    } else if (a === "--since") {
+      if (sub !== "history") {
+        deps.err(`--since is only valid for history\n`);
+        return 2;
+      }
+      const val = args[++i];
+      const ms = parseTimeFilter(val, deps.now().getTime());
+      if (ms === null) {
+        deps.err(`invalid --since value: ${JSON.stringify(val)} (use e.g. 30m, 2h, or ISO timestamp)\n`);
+        return 2;
+      }
+      since = ms;
+    } else if (a === "--until") {
+      if (sub !== "history") {
+        deps.err(`--until is only valid for history\n`);
+        return 2;
+      }
+      const val = args[++i];
+      const ms = parseTimeFilter(val, deps.now().getTime());
+      if (ms === null) {
+        deps.err(`invalid --until value: ${JSON.stringify(val)} (use e.g. 30m, 2h, or ISO timestamp)\n`);
+        return 2;
+      }
+      until = ms;
+    } else if (a === "--limit") {
+      if (sub !== "history") {
+        deps.err(`--limit is only valid for history\n`);
+        return 2;
+      }
+      const val = args[++i];
+      const n = Number(val);
+      if (!Number.isInteger(n) || n <= 0) {
+        deps.err(`invalid --limit: ${JSON.stringify(val)} (must be a positive integer)\n`);
+        return 2;
+      }
+      limit = n;
     } else if (a.startsWith("--")) {
       deps.err(`unknown flag: ${a}\n`);
       return 2;
@@ -127,11 +228,8 @@ function parseFlags(sub: StatusSubcommand, args: string[], deps: StatusCliDeps):
       positional.push(a);
     }
   }
-  if (withinMs !== null && sub !== "next-runs") {
-    deps.err(`--within is only valid for next-runs\n`);
-    return 2;
-  }
-  return { configPath: positional[0], json, withinMs };
+
+  return { configPath: positional[0], json, withinMs, job, since, until, limit };
 }
 
 function render(sub: StatusSubcommand, report: StatusReport, parsed: ParsedArgs, deps: StatusCliDeps): void {
@@ -216,6 +314,30 @@ function renderStatus(report: StatusReport, parsed: ParsedArgs, deps: StatusCliD
       j.lastFired === null ? "-" : fmtRelative(j.lastFired - report.now),
       j.nextFire === null ? "-" : fmtRelative(j.nextFire - report.now),
       j.health,
+    ]);
+  }
+  deps.out(table(rows));
+}
+
+function renderHistory(records: RunRecord[], parsed: ParsedArgs, deps: StatusCliDeps): void {
+  if (parsed.json) {
+    deps.out(JSON.stringify(records, null, 2) + "\n");
+    return;
+  }
+  if (records.length === 0) {
+    deps.out("no run history found" + (parsed.job ? ` for job=${parsed.job}` : "") + "\n");
+    return;
+  }
+  const nowMs = deps.now().getTime();
+  const rows: string[][] = [["JOB", "SCHEDULED", "STARTED", "DURATION", "OUTCOME", "EXIT"]];
+  for (const r of records) {
+    rows.push([
+      r.job,
+      fmtTs(r.scheduledFor),
+      fmtRelative(r.startedAt - nowMs),
+      r.durationMs !== null ? `${(r.durationMs / 1000).toFixed(1)}s` : "-",
+      r.outcome,
+      r.exitCode !== null ? String(r.exitCode) : "-",
     ]);
   }
   deps.out(table(rows));

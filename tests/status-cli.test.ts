@@ -54,7 +54,7 @@ beforeAll(() => {
   );
 });
 
-function run(sub: "status" | "list" | "next-runs", args: string[]) {
+function run(sub: "status" | "list" | "next-runs" | "history", args: string[]) {
   const out: string[] = [];
   const err: string[] = [];
   const deps: StatusCliDeps = {
@@ -143,16 +143,16 @@ describe("status", () => {
   });
 });
 
-// Fixtures built per-test so we can vary maxSleepMs, corrupt sidecars, etc.
 function runWith(
   opts: {
     registry?: unknown | string;
     enabled?: unknown;
     topology?: unknown | string | null;
     heartbeat?: string; // omit → no heartbeat file written
+    history?: string; // omit → historyPath: null
     maxSleepMs?: number;
   },
-  sub: "status" | "list" | "next-runs",
+  sub: "status" | "list" | "next-runs" | "history",
   args: string[] = [],
 ) {
   const d = mkdtempSync(join(tmpdir(), "cronbird-status-w-"));
@@ -167,6 +167,11 @@ function runWith(
   }
   const hbp = join(d, "hb.json");
   if (opts.heartbeat !== undefined) writeFileSync(hbp, opts.heartbeat);
+  let histPath: string | null = null;
+  if (opts.history !== undefined) {
+    histPath = join(d, "history.jsonl");
+    writeFileSync(histPath, opts.history);
+  }
   const cfg = join(d, "config.json");
   writeFileSync(
     cfg,
@@ -177,6 +182,7 @@ function runWith(
       topologyPath: tp,
       heartbeatPath: hbp,
       syncedHeartbeatDir: null,
+      historyPath: histPath,
       dispatchCommand: ["./run.sh"],
       dispatchArgsTemplate: ["{job}"],
       maxSleepMs: opts.maxSleepMs ?? 60_000,
@@ -397,5 +403,119 @@ describe("argument errors", () => {
     });
     expect(code).toBe(1);
     expect(err.join("")).toContain("config");
+  });
+
+  test("history flags passed to status / list / next-runs → exit 2", () => {
+    expect(run("status", ["--job", "alpha"]).code).toBe(2);
+    expect(run("list", ["--since", "1h"]).code).toBe(2);
+    expect(run("next-runs", ["--until", "1h"]).code).toBe(2);
+    expect(run("status", ["--limit", "5"]).code).toBe(2);
+  });
+
+  test("invalid history flag values → exit 2", () => {
+    expect(run("history", ["--since", "banana"]).code).toBe(2);
+    expect(run("history", ["--limit", "not-a-num"]).code).toBe(2);
+    expect(run("history", ["--limit", "0"]).code).toBe(2);
+    expect(run("history", ["--job"]).code).toBe(2);
+  });
+});
+
+describe("history subcommand", () => {
+  const sampleHistory = [
+    JSON.stringify({
+      job: "alpha",
+      scheduledFor: NOW_MS - 3_600_000,
+      startedAt: NOW_MS - 3_600_000,
+      finishedAt: NOW_MS - 3_590_000,
+      exitCode: 0,
+      outcome: "success",
+      durationMs: 10_000,
+    }),
+    JSON.stringify({
+      job: "alpha",
+      scheduledFor: NOW_MS - 1_800_000,
+      startedAt: NOW_MS - 1_800_000,
+      finishedAt: NOW_MS - 1_795_000,
+      exitCode: 1,
+      outcome: "failure",
+      durationMs: 5_000,
+    }),
+    JSON.stringify({
+      job: "bravo",
+      scheduledFor: NOW_MS - 600_000,
+      startedAt: NOW_MS - 600_000,
+      finishedAt: null,
+      exitCode: null,
+      outcome: "running",
+      durationMs: null,
+    }),
+  ].join("\n");
+
+  test("missing historyPath in config → exit 1 with error", () => {
+    const { code, err } = run("history", []);
+    expect(code).toBe(1);
+    expect(err).toMatch(/config\.historyPath is not configured/);
+  });
+
+  test("empty history file → prints 'no run history found'", () => {
+    const { code, out } = runWith({ history: "" }, "history", []);
+    expect(code).toBe(0);
+    expect(out).toContain("no run history found");
+  });
+
+  test("renders human-readable table of run history", () => {
+    const { code, out } = runWith({ history: sampleHistory }, "history", []);
+    expect(code).toBe(0);
+    expect(out).toContain("JOB");
+    expect(out).toContain("SCHEDULED");
+    expect(out).toContain("OUTCOME");
+    expect(out).toContain("alpha");
+    expect(out).toContain("bravo");
+    expect(out).toContain("success");
+    expect(out).toContain("failure");
+    expect(out).toContain("running");
+  });
+
+  test("--json emits structured array of RunRecord", () => {
+    const { code, out } = runWith({ history: sampleHistory }, "history", ["--json"]);
+    expect(code).toBe(0);
+    const parsed = JSON.parse(out);
+    expect(Array.isArray(parsed)).toBe(true);
+    expect(parsed.length).toBe(3);
+    expect(parsed[0].job).toBe("bravo"); // newest first
+  });
+
+  test("--job filters to specific job", () => {
+    const { code, out } = runWith({ history: sampleHistory }, "history", ["--job", "bravo", "--json"]);
+    expect(code).toBe(0);
+    const parsed = JSON.parse(out);
+    expect(parsed.length).toBe(1);
+    expect(parsed[0].job).toBe("bravo");
+  });
+
+  test("--since and --limit filter history correctly", () => {
+    // --since 45m selects only alpha at -30m and bravo at -10m
+    const { code, out } = runWith({ history: sampleHistory }, "history", ["--since", "45m", "--limit", "1", "--json"]);
+    expect(code).toBe(0);
+    const parsed = JSON.parse(out);
+    expect(parsed.length).toBe(1);
+    expect(parsed[0].job).toBe("bravo");
+  });
+
+  test("status subcommand populates lastRun when history is configured", () => {
+    const { code, out } = runWith(
+      {
+        registry: { jobs: [everyMinute("alpha"), everyMinute("bravo")] },
+        enabled: ["alpha", "bravo"],
+        history: sampleHistory,
+      },
+      "status",
+      ["--json"],
+    );
+    expect(code).toBe(0);
+    const parsed = JSON.parse(out);
+    const alpha = parsed.jobs.find((j: { name: string }) => j.name === "alpha");
+    expect(alpha.lastRun).not.toBeNull();
+    expect(alpha.lastRun.outcome).toBe("failure"); // newest alpha run was failure
   });
 });

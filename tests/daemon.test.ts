@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { lookbackForSchedule } from "../src/core/catchup";
 import { createMatcher } from "../src/core/cron";
-import type { Job, Topology, Heartbeat, CompletionRecord } from "../src/core/types";
+import type { Job, Topology, Heartbeat, CompletionRecord, RunRecord } from "../src/core/types";
 import { type DaemonDeps, runForever } from "../src/core/daemon";
 import { CATCHUP_LOOKBACK_CAP_MS, CATCHUP_LOOKBACK_FLOOR_MS, FATAL_EXIT_CODE } from "../src/core/constants";
 
@@ -28,6 +28,8 @@ const h0Heartbeat = (over: {
   attempts?: Record<string, number>;
   done?: Record<string, number>;
   last_success?: Record<string, number>;
+  running?: Record<string, number>;
+  running_slots?: Record<string, number>;
 }): Heartbeat => ({
   ts: 0,
   host: "ml-1",
@@ -37,7 +39,8 @@ const h0Heartbeat = (over: {
   dispatched_minute: {},
   last_fired: {},
   queue: over.queue ?? [],
-  running: {},
+  running: over.running ?? {},
+  ...(over.running_slots !== undefined ? { running_slots: over.running_slots } : {}),
   last_completed: Object.fromEntries(
     Object.entries(over.done ?? {}).map(([n, exit]) => [n, { ts: 1, exitCode: exit, durationMs: 0 }]),
   ),
@@ -75,6 +78,8 @@ interface HarnessOpts {
   cooldownSeconds?: (job: Job<unknown>) => number;
   /** Upstream resolver; job name → its dependency names. Default: () => []. */
   dependencies?: (job: Job<unknown>) => string[];
+  recordRun?: (record: RunRecord) => void;
+  dispatchThrows?: (name: string) => boolean;
 }
 
 function harness(opts: HarnessOpts) {
@@ -83,6 +88,7 @@ function harness(opts: HarnessOpts) {
   const sleeps: number[] = [];
   const heartbeats: Heartbeat[] = [];
   const logs: string[] = [];
+  const records: RunRecord[] = [];
   let lastHb: Heartbeat | null = null;
   // For each dispatch, the guard minute already persisted to the heartbeat at
   // the moment dispatch is called. undefined ⇒ the guard was NOT yet durable
@@ -133,6 +139,9 @@ function harness(opts: HarnessOpts) {
     loadEnabled,
     loadTopology,
     dispatch: (name) => {
+      if (opts.dispatchThrows?.(name)) {
+        throw new Error(`simulated dispatch failure for ${name}`);
+      }
       guardAtDispatch[name] = lastHb?.dispatched_minute[name];
       lastFiredAtDispatch[name] = lastHb?.last_fired[name];
       dispatched.push(name);
@@ -157,6 +166,7 @@ function harness(opts: HarnessOpts) {
     readCompletions: opts.readCompletions ?? (() => ({ running: {}, done: {} })),
     cooldownSeconds: opts.cooldownSeconds ?? (() => 0),
     dependencies: opts.dependencies ?? (() => []),
+    recordRun: opts.recordRun ?? ((rec) => records.push(rec)),
   };
   return {
     deps,
@@ -164,6 +174,7 @@ function harness(opts: HarnessOpts) {
     sleeps,
     heartbeats,
     logs,
+    records,
     guardAtDispatch: () => guardAtDispatch,
     lastFiredAtDispatch: () => lastFiredAtDispatch,
   };
@@ -880,5 +891,112 @@ describe("staleness eviction — Task E", () => {
     });
     await runForever(h.deps);
     expect(h.dispatched).toEqual(["fresh"]);
+  });
+});
+
+describe("run history recording — Ticket #3", () => {
+  test("dispatch records an in-flight RunRecord with slotTs and startedAt", async () => {
+    const now = d("2026-06-01T09:00:00Z");
+    const h = harness({
+      nows: [now],
+      playbooks: [pb({ name: "nine", cronSchedule: "0 9 * * *" })],
+    });
+    await runForever(h.deps);
+
+    expect(h.dispatched).toEqual(["nine"]);
+    expect(h.records.length).toBe(1);
+    expect(h.records[0]!).toEqual({
+      job: "nine",
+      scheduledFor: now.getTime(),
+      startedAt: now.getTime(),
+      finishedAt: null,
+      exitCode: null,
+      outcome: "running",
+      durationMs: null,
+    });
+  });
+
+  test("completion records a finished RunRecord matching slotTs and startedAt", async () => {
+    const slot = d("2026-06-01T09:00:00Z").getTime();
+    const completedTs = slot + 15_000;
+    let tick = 0;
+    const h = harness({
+      nows: [d("2026-06-01T09:00:00Z"), d("2026-06-01T09:01:00Z")],
+      playbooks: [pb({ name: "nine", cronSchedule: "0 9 * * *" })],
+      readCompletions: (): { running: Record<string, number>; done: Record<string, CompletionRecord> } => {
+        if (tick++ === 0) return { running: {}, done: {} };
+        return { running: {}, done: { nine: { ts: completedTs, exitCode: 0, durationMs: 15_000 } } };
+      },
+    });
+    await runForever(h.deps);
+
+    // Record 1: dispatch (running); Record 2: completion (success)
+    expect(h.records.length).toBe(2);
+    expect(h.records[0]!.outcome).toBe("running");
+    expect(h.records[1]!).toEqual({
+      job: "nine",
+      scheduledFor: slot,
+      startedAt: slot,
+      finishedAt: completedTs,
+      exitCode: 0,
+      outcome: "success",
+      durationMs: 15_000,
+    });
+  });
+
+  test("throwing dispatch catches error and records failure", async () => {
+    const now = d("2026-06-01T09:00:00Z");
+    const h = harness({
+      nows: [now],
+      playbooks: [pb({ name: "nine", cronSchedule: "0 9 * * *" })],
+      dispatchThrows: () => true,
+    });
+    await runForever(h.deps);
+
+    expect(h.dispatched).toEqual([]);
+    expect(h.records.length).toBe(2);
+    expect(h.records[0]!.outcome).toBe("running");
+    expect(h.records[1]!).toEqual({
+      job: "nine",
+      scheduledFor: now.getTime(),
+      startedAt: now.getTime(),
+      finishedAt: now.getTime(),
+      exitCode: 1,
+      outcome: "failure",
+      durationMs: 0,
+    });
+  });
+
+  test("running_slots persists across heartbeat and restores on restart", async () => {
+    const slot = d("2026-06-01T09:00:00Z").getTime();
+    // Prior heartbeat has job "nine" currently running with slotTs
+    const priorHb = h0Heartbeat({
+      running: { nine: slot },
+      running_slots: { nine: slot },
+    });
+
+    const completedTs = slot + 5_000;
+    const h = harness({
+      nows: [d("2026-06-01T09:01:00Z")],
+      playbooks: [pb({ name: "nine", cronSchedule: "0 9 * * *" })],
+      startHeartbeat: priorHb,
+      readCompletions: () => ({
+        running: {},
+        done: { nine: { ts: completedTs, exitCode: 0, durationMs: 5_000 } },
+      }),
+    });
+    await runForever(h.deps);
+
+    // Completion was correlated using restored running_slots
+    expect(h.records.length).toBe(1);
+    expect(h.records[0]!).toEqual({
+      job: "nine",
+      scheduledFor: slot,
+      startedAt: slot,
+      finishedAt: completedTs,
+      exitCode: 0,
+      outcome: "success",
+      durationMs: 5_000,
+    });
   });
 });

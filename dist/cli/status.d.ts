@@ -1,4 +1,4 @@
-export type StatusSubcommand = "status" | "list" | "next-runs";
+export type StatusSubcommand = "status" | "list" | "next-runs" | "history";
 export declare const STATUS_SUBCOMMANDS: ReadonlySet<string>;
 export interface StatusCliDeps {
     now: () => Date;

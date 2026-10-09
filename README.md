@@ -31,6 +31,9 @@ All fields are required unless marked optional.
 | `topologyPath` | `string \| null` | Path to a topology JSON file (`{ hosts, owners }`). `null` = no topology (single-host mode). |
 | `heartbeatPath` | `string` | Path for the local heartbeat file (double-fire guard + catch-up state). |
 | `syncedHeartbeatDir` | `string \| null` | Directory for a synced per-host heartbeat copy (E2 offline-owner alert). `null` = no synced copy. |
+| `historyPath` | `string \| null` (optional) | Path to append-only run-history JSONL file. `null` or omitted = disable run history. |
+| `maxHistoryRecords` | `number` (optional) | Maximum records retained during history rotation. Default: `1000`. |
+| `historyRetentionMs` | `number` (optional) | Maximum age of retained history records (ms). Default: `604800000` (7 days). |
 | `dispatchCommand` | `string[]` | Command to run for dispatch (no shell). Example: `["./scripts/run-job.sh"]`. |
 | `dispatchArgsTemplate` | `string[]` | Argv template appended after `dispatchCommand`. Use `"{job}"` as a placeholder for the job name. Example: `["{job}", "--scheduled"]`. `["{job}"]` is the minimal valid template — the array must be non-empty and must include `{job}`. |
 | `maxSleepMs` | `number` | Maximum sleep between ticks (ms). Default suggestion: `60000` (1 min). |
@@ -88,6 +91,7 @@ An `each`-scope job runs on a host only if it's listed in that host's enabled se
   "topologyPath": null,
   "heartbeatPath": "~/.cronbird/heartbeat.json",
   "syncedHeartbeatDir": null,
+  "historyPath": "~/.cronbird/history.jsonl",
   "dispatchCommand": ["./scripts/run-job.sh"],
   "dispatchArgsTemplate": ["{job}", "--scheduled"],
   "maxSleepMs": 60000,
@@ -139,9 +143,10 @@ Read-only subcommands report what is scheduled, when jobs fire, and their health
 cronbird list      <config.json>              # every job: schedule, scope, active, runnable-here
 cronbird next-runs <config.json> [--within 2h] # runnable jobs sorted by next fire (optional window)
 cronbird status    <config.json>              # per-job health + daemon heartbeat age
+cronbird history   <config.json> [options]    # query execution run history (job, since, until, limit)
 ```
 
-All three accept `--json` for machine-readable output. `cronbird help` (or `--help` / `-h`) prints this list; running `cronbird <config.json>` with no subcommand starts the daemon as before.
+All four accept `--json` for machine-readable output. `cronbird help` (or `--help` / `-h`) prints this list; running `cronbird <config.json>` with no subcommand starts the daemon as before.
 
 `status` classifies each job's `HEALTH`:
 
@@ -166,7 +171,38 @@ hourly-ping   each    yes       1m ago     in 42m      ok
 morning-scan  single  yes       -          in 14h 42m  never-fired
 ```
 
-The projection is built by `computeStatus` in `cronbird/core` (pure, clock-injected) — any consumer can render its own view over the same data.
+The projection is built by `computeStatus` in `cronbird/core` (pure, clock-injected) — any consumer can render its own view over the same data. When `historyPath` is configured, `computeStatus` incorporates the most recent run record (`lastRun`) into each job status.
+
+### Run history
+
+`cronbird history <config.json>` queries the structured run log (requires `historyPath` configured):
+
+```bash
+cronbird history ./cronbird.config.json
+cronbird history ./cronbird.config.json --job morning-scan
+cronbird history ./cronbird.config.json --since 24h --limit 50
+cronbird history ./cronbird.config.json --since 2026-10-08T00:00:00Z --until 2026-10-09T00:00:00Z
+cronbird history ./cronbird.config.json --json
+```
+
+Filtering options:
+- `--job <name>` — filter records to a specific job name.
+- `--since <dur|iso>` — only records on or after timestamp / relative duration (e.g. `30m`, `2h`, `7d`, or ISO 8601).
+- `--until <dur|iso>` — only records on or before timestamp / relative duration.
+- `--limit <N>` — return at most `N` records (sorted most recent first).
+- `--json` — output JSON array of run records (`job`, `scheduledFor`, `startedAt`, `finishedAt`, `exitCode`, `outcome`, `durationMs`).
+
+Example:
+
+```
+$ cronbird history ./cronbird.config.json --limit 5
+JOB           SCHEDULED            STARTED  DURATION  OUTCOME  EXIT
+morning-scan  2026-10-09T06:00:00  1m ago   12.4s     success  0
+hourly-ping   2026-10-09T06:00:00  1m ago   0.2s      success  0
+hourly-ping   2026-10-09T05:00:00  1h ago   0.2s      success  0
+nightly-sync  2026-10-09T02:00:00  4h ago   45.1s     failure  1
+hourly-ping   2026-10-09T04:00:00  2h ago   0.2s      success  0
+```
 
 ## Deploy
 

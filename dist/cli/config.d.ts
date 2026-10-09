@@ -7,6 +7,9 @@ export interface CronbirdConfig {
     topologyPath: string | null;
     heartbeatPath: string;
     syncedHeartbeatDir: string | null;
+    historyPath: string | null;
+    maxHistoryRecords?: number;
+    historyRetentionMs?: number;
     dispatchCommand: string[];
     dispatchArgsTemplate: string[];
     maxSleepMs: number;

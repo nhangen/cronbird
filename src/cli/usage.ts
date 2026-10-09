@@ -15,9 +15,12 @@ export function usageText(): string {
     "  cronbird next-runs <config.json> [--json] [--within <dur>]",
     "                                                 runnable jobs sorted by next fire time",
     "  cronbird status <config.json> [--json]         per-job health + daemon heartbeat age",
+    "  cronbird history <config.json> [--json] [--job <name>] [--since <time>] [--until <time>] [--limit <n>]",
+    "                                                 query structured run-history log",
     "  cronbird help                                  show this help",
     "",
     "  <dur> is Nd / Nh / Nm / Ns (e.g. 30m, 2h, 1d).",
+    "  <time> is <dur> (relative to now), epoch-ms, or an ISO timestamp.",
     "",
   ].join("\n");
 }

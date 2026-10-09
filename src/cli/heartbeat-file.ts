@@ -42,6 +42,7 @@ export function readHeartbeatFile(path: string): Heartbeat | null {
     // never crashes at boot, never fabricates entries.
     queue: queueEntries(r.queue),
     running: numericMap(r.running),
+    ...(r.running_slots !== undefined ? { running_slots: numericMap(r.running_slots) } : {}),
     last_completed: completionMap(r.last_completed),
     attempts: numericMap(r.attempts),
     last_run: numericMap(r.last_run),

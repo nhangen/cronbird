@@ -37,3 +37,9 @@ export declare const STALE_EXIT_CODE = 69;
  */
 export declare const CATCHUP_LOOKBACK_FLOOR_MS = 3600000;
 export declare const CATCHUP_LOOKBACK_CAP_MS = 21600000;
+/** Default maximum number of run-history records retained before rotation. */
+export declare const DEFAULT_MAX_HISTORY_RECORDS = 1000;
+/** Default maximum age of run-history records retained (7 days in ms). */
+export declare const DEFAULT_HISTORY_RETENTION_MS: number;
+/** Number of append writes between periodic history file rotation checks. */
+export declare const HISTORY_ROTATION_INTERVAL_WRITES = 100;
