@@ -9,7 +9,7 @@ export interface FlockHandle {
   release(): void;
 }
 
-interface LibcFlock {
+export interface LibcFlock {
   flock(fd: number, operation: number): number;
   errno(): number;
 }
@@ -77,8 +77,12 @@ function getLibc(): LibcFlock | null {
  * - A no-op {@link FlockHandle} if libc/FFI is unsupported or fails with an unrecoverable fs error,
  *   so unsupported platforms fail open rather than halting the daemon.
  */
-export function acquireFlock(lockPath: string, log?: (msg: string) => void): FlockHandle | null {
-  const libc = getLibc();
+export function acquireFlock(
+  lockPath: string,
+  log?: (msg: string) => void,
+  libcOverride?: LibcFlock,
+): FlockHandle | null {
+  const libc = libcOverride ?? getLibc();
   if (!libc) {
     log?.(`flock: platform ${process.platform} or bun:ffi not supported; running without single-instance lock`);
     return { release: () => {} };

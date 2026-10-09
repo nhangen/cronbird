@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { acquireFlock } from "../src/cli/flock";
+import { acquireFlock, type LibcFlock } from "../src/cli/flock";
 
 const MAIN = join(import.meta.dir, "../src/cli/main.ts");
 
@@ -113,6 +113,35 @@ describe("acquireFlock", () => {
       reused?.release();
     } finally {
       rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  describe("flock failure classification", () => {
+    const failing = (errno: number): LibcFlock => ({ flock: () => -1, errno: () => errno });
+    const contention = process.platform === "darwin" ? 35 : 11;
+
+    test("the platform's EWOULDBLOCK errno is contention", () => {
+      const dir = mkdtempSync(join(tmpdir(), "cronbird-flock-errno-"));
+      try {
+        expect(acquireFlock(join(dir, "l.lock"), undefined, failing(contention))).toBeNull();
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    });
+
+    // 0 = flock failed with no errno set; 37 = ENOLCK; -1 = errno itself was unreadable.
+    for (const errno of [0, 37, -1]) {
+      test(`errno ${errno} fails open instead of reading as contention`, () => {
+        const dir = mkdtempSync(join(tmpdir(), "cronbird-flock-errno-"));
+        const logs: string[] = [];
+        try {
+          const handle = acquireFlock(join(dir, "l.lock"), (m) => logs.push(m), failing(errno));
+          expect(handle).not.toBeNull();
+          expect(logs.join("\n")).toContain(`unexpected errno ${errno}`);
+        } finally {
+          rmSync(dir, { recursive: true, force: true });
+        }
+      });
     }
   });
 
