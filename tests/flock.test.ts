@@ -129,7 +129,7 @@ describe("acquireFlock", () => {
       }
     });
 
-    // 0 = flock failed with no errno set; 37 = ENOLCK; -1 = errno itself was unreadable.
+    // 0 = flock failed with no errno set; 37 = ENOLCK on Linux (EALREADY on Darwin, still not EWOULDBLOCK); -1 = errno itself was unreadable.
     for (const errno of [0, 37, -1]) {
       test(`errno ${errno} fails open instead of reading as contention`, () => {
         const dir = mkdtempSync(join(tmpdir(), "cronbird-flock-errno-"));
@@ -176,16 +176,17 @@ describe("acquireFlock", () => {
       }),
     );
 
+    const proc = Bun.spawn(["bun", MAIN, cfg], { stdout: "pipe", stderr: "pipe" });
     try {
-      const proc = Bun.spawn(["bun", MAIN, cfg], { stdout: "pipe", stderr: "pipe" });
       const reader = proc.stderr.getReader();
       const decoder = new TextDecoder();
       let stderr = "";
-      const deadline = Date.now() + 10_000;
+      const deadline = Date.now() + 4_000;
       while (!stderr.includes("started —") && Date.now() < deadline) {
-        const { value, done } = await reader.read();
-        if (done) break;
-        stderr += decoder.decode(value);
+        const timer = new Promise<null>((r) => setTimeout(() => r(null), Math.max(deadline - Date.now(), 0)));
+        const chunk = await Promise.race([reader.read(), timer]);
+        if (!chunk || chunk.done) break;
+        stderr += decoder.decode(chunk.value, { stream: true });
       }
       proc.kill(15);
       const exitCode = await proc.exited;
@@ -193,6 +194,7 @@ describe("acquireFlock", () => {
       expect(stderr).toContain("started — host=ml-1");
       expect(stderr).not.toContain("another instance is already running");
     } finally {
+      proc.kill(9);
       rmSync(dir, { recursive: true, force: true });
     }
   });

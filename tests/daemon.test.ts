@@ -288,11 +288,9 @@ describe("double-fire guard", () => {
     expect(h.dispatched).toEqual(["ev", "ev"]);
   });
 
-  test("NTP backward step >1 min does not re-fire even when guard was pruned (gilfoyle G3)", async () => {
-    // Minute 103: ev fires.
-    // Minute 105: prune drops 103 from state.guard because 103 < 105 - 1 = 104.
-    // Backward step: clock jumps from 105 back to 103 (where state.guard has no 103 entry).
-    // The guard still holds 105 here, so it (not lastFired) blocks the re-fire.
+  test("NTP backward step >1 min does not re-fire (gilfoyle G3)", async () => {
+    // Minute 103: ev fires. Minute 105: ev fires again and its guard entry moves to 105.
+    // Backward step to 103: the guard entry (105) still blocks the re-fire.
     const h = harness({
       nows: [
         d("2026-06-01T09:03:05Z"), // minute 103: fires
