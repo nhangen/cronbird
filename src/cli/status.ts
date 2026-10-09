@@ -74,14 +74,19 @@ export function runStatusCommand(sub: StatusSubcommand, args: string[], deps: St
   }
 
   if (sub === "history") {
+    let historyPath: string | null;
     try {
-      const cfg = parseConfig(readFileSync(configPath, "utf8"), deps.env);
-      if (cfg.historyPath === null) {
-        deps.err(`error: config.historyPath is not configured in ${configPath}\n`);
-        return 1;
-      }
-      const rawRecords = readRunHistoryFile(cfg.historyPath);
-      const records = queryRunHistory(rawRecords, {
+      historyPath = parseConfig(readFileSync(configPath, "utf8"), deps.env).historyPath;
+    } catch (e) {
+      deps.err(`config error: ${e instanceof Error ? e.message : String(e)}\n`);
+      return 1;
+    }
+    if (historyPath === null) {
+      deps.err(`error: config.historyPath is not configured in ${configPath}\n`);
+      return 1;
+    }
+    try {
+      const records = queryRunHistory(readRunHistoryFile(historyPath), {
         job: parsed.job,
         since: parsed.since ?? undefined,
         until: parsed.until ?? undefined,
@@ -90,7 +95,7 @@ export function runStatusCommand(sub: StatusSubcommand, args: string[], deps: St
       renderHistory(records, parsed, deps);
       return 0;
     } catch (e) {
-      deps.err(`config error: ${e instanceof Error ? e.message : String(e)}\n`);
+      deps.err(`error: could not read run history ${historyPath}: ${e instanceof Error ? e.message : String(e)}\n`);
       return 1;
     }
   }
@@ -117,7 +122,14 @@ export function runStatusCommand(sub: StatusSubcommand, args: string[], deps: St
     if (heartbeat === null && existsSync(cfg.heartbeatPath)) {
       deps.err(`warning: heartbeat file present but unparseable: ${cfg.heartbeatPath}\n`);
     }
-    const history = cfg.historyPath ? readRunHistoryFile(cfg.historyPath) : undefined;
+    let history: RunRecord[] | undefined;
+    if (cfg.historyPath) {
+      try {
+        history = readRunHistoryFile(cfg.historyPath);
+      } catch (e) {
+        deps.err(`warning: could not read run history ${cfg.historyPath}: ${e instanceof Error ? e.message : String(e)}\n`);
+      }
+    }
     report = computeStatus({
       jobs,
       host: cfg.hostname,

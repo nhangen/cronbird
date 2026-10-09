@@ -4,9 +4,11 @@ import { type RunHistoryRetentionOptions, type RunRecord } from "../core/index";
  */
 export declare function appendRunRecordFile(path: string, record: RunRecord): void;
 /**
- * Reads run records from disk. Tolerates corrupt lines (drops them rather than
- * crashing), parses valid JSON lines, merges in-flight and completion records,
- * and returns the merged set. Also parses a top-level JSON array fallback.
+ * Reads run records from disk. A missing file is empty history; any other read
+ * error throws so an unreadable store is not mistaken for an empty one. Tolerates
+ * corrupt lines (drops them rather than crashing), parses valid JSON lines, merges
+ * in-flight and completion records, and returns the merged set. Also parses a
+ * top-level JSON array fallback.
  */
 export declare function readRunHistoryFile(path: string): RunRecord[];
 /**

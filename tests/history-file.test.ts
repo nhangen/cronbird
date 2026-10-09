@@ -1,5 +1,5 @@
 import { afterAll, describe, expect, test } from "bun:test";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -103,14 +103,20 @@ describe("history-file rotation & sink", () => {
     expect(loaded.map((r) => r.scheduledFor)).toEqual([baseSlot + 20, baseSlot + 30]);
   });
 
-  test("rotateRunHistoryFile does not overwrite non-empty file when read yields 0 records", () => {
+  test("rotateRunHistoryFile throws and leaves a non-empty file untouched when no record parses", () => {
     const file = join(dir, "corrupt.jsonl");
     const corruptContent = "not-json\nalso-corrupt\n";
     writeFileSync(file, corruptContent);
 
-    // Rotation should abort and not truncate the file to 0 bytes
-    rotateRunHistoryFile(file, { maxRecords: 10 });
+    expect(() => rotateRunHistoryFile(file, { maxRecords: 10 })).toThrow(/rotation skipped/);
     expect(readFileSync(file, "utf8")).toBe(corruptContent);
+  });
+
+  test("readRunHistoryFile throws on a read error other than a missing file", () => {
+    const asDir = join(dir, "history-is-a-dir.jsonl");
+    mkdirSync(asDir);
+    expect(() => readRunHistoryFile(asDir)).toThrow();
+    expect(readRunHistoryFile(join(dir, "does-not-exist.jsonl"))).toEqual([]);
   });
 
   test("writeRunHistoryFile sorts records chronologically ascending", () => {
@@ -143,21 +149,15 @@ describe("history-file rotation & sink", () => {
   });
 
   test("createFileRunHistorySink logs rotation error on failure", () => {
-    const readOnlyDir = join(dir, "readonly-dir");
-    mkdirSync(readOnlyDir);
-    const file = join(readOnlyDir, "sink.jsonl");
+    const file = join(dir, "sink-fail.jsonl");
     appendRunRecordFile(file, rec({ scheduledFor: baseSlot + 1 }));
     appendRunRecordFile(file, rec({ scheduledFor: baseSlot + 2 }));
+    mkdirSync(`${file}.tmp`);
 
-    chmodSync(readOnlyDir, 0o555);
-    try {
-      const logs: string[] = [];
-      const sink = createFileRunHistorySink(file, { maxRecords: 1 }, 1, (msg) => logs.push(msg));
-      sink(rec({ scheduledFor: baseSlot + 3 }));
-      expect(logs.length).toBe(1);
-      expect(logs[0]!).toContain("history rotation failed");
-    } finally {
-      chmodSync(readOnlyDir, 0o755);
-    }
+    const logs: string[] = [];
+    const sink = createFileRunHistorySink(file, { maxRecords: 1 }, 1, (msg) => logs.push(msg));
+    sink(rec({ scheduledFor: baseSlot + 3 }));
+    expect(logs.length).toBe(1);
+    expect(logs[0]!).toContain("history rotation failed");
   });
 });

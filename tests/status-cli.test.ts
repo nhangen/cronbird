@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runStatusCommand, type StatusCliDeps } from "../src/cli/index";
@@ -150,6 +150,7 @@ function runWith(
     topology?: unknown | string | null;
     heartbeat?: string; // omit → no heartbeat file written
     history?: string; // omit → historyPath: null
+    historyAsDir?: boolean; // history path exists but is a directory, so it cannot be read as a file
     maxSleepMs?: number;
   },
   sub: "status" | "list" | "next-runs" | "history",
@@ -170,7 +171,8 @@ function runWith(
   let histPath: string | null = null;
   if (opts.history !== undefined) {
     histPath = join(d, "history.jsonl");
-    writeFileSync(histPath, opts.history);
+    if (opts.historyAsDir) mkdirSync(histPath);
+    else writeFileSync(histPath, opts.history);
   }
   const cfg = join(d, "config.json");
   writeFileSync(
@@ -455,6 +457,19 @@ describe("history subcommand", () => {
     const { code, err } = run("history", []);
     expect(code).toBe(1);
     expect(err).toMatch(/config\.historyPath is not configured/);
+  });
+
+  test("unreadable history file → exit 1 naming the history, not a config error", () => {
+    const { code, err } = runWith({ history: "", historyAsDir: true }, "history", []);
+    expect(code).toBe(1);
+    expect(err).toMatch(/run history/);
+    expect(err).not.toMatch(/config error/);
+  });
+
+  test("status warns and continues when the history file is unreadable", () => {
+    const { code, err } = runWith({ history: "", historyAsDir: true }, "status", []);
+    expect(code).toBe(0);
+    expect(err).toMatch(/warning: .*run history/);
   });
 
   test("empty history file → prints 'no run history found'", () => {

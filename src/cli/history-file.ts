@@ -27,9 +27,11 @@ export function appendRunRecordFile(path: string, record: RunRecord): void {
 }
 
 /**
- * Reads run records from disk. Tolerates corrupt lines (drops them rather than
- * crashing), parses valid JSON lines, merges in-flight and completion records,
- * and returns the merged set. Also parses a top-level JSON array fallback.
+ * Reads run records from disk. A missing file is empty history; any other read
+ * error throws so an unreadable store is not mistaken for an empty one. Tolerates
+ * corrupt lines (drops them rather than crashing), parses valid JSON lines, merges
+ * in-flight and completion records, and returns the merged set. Also parses a
+ * top-level JSON array fallback.
  */
 export function readRunHistoryFile(path: string): RunRecord[] {
   if (!existsSync(path)) return [];
@@ -37,8 +39,9 @@ export function readRunHistoryFile(path: string): RunRecord[] {
   let content: string;
   try {
     content = readFileSync(path, "utf8");
-  } catch {
-    return [];
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return [];
+    throw err;
   }
 
   const trimmed = content.trim();
@@ -118,18 +121,10 @@ export function rotateRunHistoryFile(
   now: number = Date.now(),
 ): void {
   if (!existsSync(path)) return;
-  let stat;
-  try {
-    stat = statSync(path);
-  } catch {
-    return;
-  }
-  if (stat.size === 0) return;
+  if (statSync(path).size === 0) return;
   const current = readRunHistoryFile(path);
   if (current.length === 0) {
-    // Existing non-empty file yielded 0 records (e.g. transient read error or unparseable).
-    // Abort rotation to avoid truncating valid historical records.
-    return;
+    throw new Error(`rotation skipped: ${path} is non-empty but no record parsed`);
   }
   const pruned = pruneRunHistory(current, options, now);
   writeRunHistoryFile(path, pruned);
