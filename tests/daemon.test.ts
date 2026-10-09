@@ -29,7 +29,7 @@ const h0Heartbeat = (over: {
   done?: Record<string, number>;
   last_success?: Record<string, number>;
   running?: Record<string, number>;
-  running_slots?: Record<string, number>;
+  running_slots?: Record<string, { slotTs: number; startedAt: number }>;
 }): Heartbeat => ({
   ts: 0,
   host: "ml-1",
@@ -1012,5 +1012,58 @@ describe("run history recording — Ticket #3", () => {
     // Subsequent heartbeat cleans up completed job
     const hb2 = h2.heartbeats[0]!;
     expect(hb2.running_slots?.["nine"]).toBeUndefined();
+  });
+
+  test("a throwing recordRun on dispatch is logged and does not stop the next job dispatching", async () => {
+    const h = harness({
+      nows: [d("2026-06-01T09:00:00Z"), d("2026-06-01T09:01:00Z")],
+      playbooks: [pb({ name: "nine", cronSchedule: "0 9 * * *" }), pb({ name: "also-nine", cronSchedule: "0 9 * * *" })],
+      recordRun: () => {
+        throw new Error("disk full");
+      },
+    });
+    await runForever(h.deps);
+    expect(h.dispatched.sort()).toEqual(["also-nine", "nine"]);
+    expect(h.logs.filter((l) => l.includes("recordRun dispatch failed") && l.includes("disk full")).length).toBe(2);
+  });
+
+  test("a throwing recordRun on completion is logged and the completion is still accounted for", async () => {
+    const h = harness({
+      nows: [d("2026-06-01T09:01:00Z")],
+      playbooks: [pb({ name: "nine", cronSchedule: "0 9 * * *" })],
+      startHeartbeat: h0Heartbeat({ running: { nine: 5 }, running_slots: { nine: { slotTs: 1, startedAt: 5 } } }),
+      readCompletions: () => ({ running: {}, done: { nine: { ts: 9, exitCode: 0, durationMs: 4 } } }),
+      recordRun: () => {
+        throw new Error("disk full");
+      },
+    });
+    await runForever(h.deps);
+    expect(h.logs.some((l) => l.includes("recordRun completion failed") && l.includes("disk full"))).toBe(true);
+    expect(h.heartbeats.at(-1)!.last_success["nine"]).toBe(9);
+  });
+
+  test("a throwing recordRun while recording a dispatch failure is logged", async () => {
+    const h = harness({
+      nows: [d("2026-06-01T09:00:00Z")],
+      playbooks: [pb({ name: "nine", cronSchedule: "0 9 * * *" })],
+      dispatchThrows: () => true,
+      recordRun: () => {
+        throw new Error("disk full");
+      },
+    });
+    await runForever(h.deps);
+    expect(h.logs.some((l) => l.includes("recordRun failure recording failed") && l.includes("disk full"))).toBe(true);
+  });
+
+  test("a completion with no running slot is logged as uncorrelated and recorded with a synthesized start", async () => {
+    const h = harness({
+      nows: [d("2026-06-01T09:01:00Z")],
+      playbooks: [pb({ name: "nine", cronSchedule: "0 9 * * *" })],
+      readCompletions: () => ({ running: {}, done: { nine: { ts: 10_000, exitCode: 0, durationMs: 4_000 } } }),
+    });
+    await runForever(h.deps);
+    expect(h.records.length).toBe(1);
+    expect(h.records[0]!.startedAt).toBe(6_000);
+    expect(h.logs.some((l) => l.includes("nine") && l.includes("no running slot"))).toBe(true);
   });
 });

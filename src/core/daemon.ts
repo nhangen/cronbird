@@ -165,16 +165,10 @@ export async function runForever<T>(deps: DaemonDeps<T>): Promise<void> {
         const runs = prior.running ?? {};
         for (const [name, startedAt] of Object.entries(runs)) {
           const entry = slots[name];
-          const slotTs = typeof entry === "number" ? entry : (entry?.slotTs ?? startedAt);
-          const sAt = typeof entry === "object" && entry !== null ? entry.startedAt : startedAt;
-          rs[name] = { slotTs, startedAt: sAt };
+          rs[name] = { slotTs: entry?.slotTs ?? startedAt, startedAt: entry?.startedAt ?? startedAt };
         }
         for (const [name, entry] of Object.entries(slots)) {
-          if (!rs[name]) {
-            const slotTs = typeof entry === "number" ? entry : entry.slotTs;
-            const startedAt = typeof entry === "number" ? (runs[name] ?? slotTs) : entry.startedAt;
-            rs[name] = { slotTs, startedAt };
-          }
+          if (!rs[name]) rs[name] = { slotTs: entry.slotTs, startedAt: entry.startedAt };
         }
       }
       return rs;
@@ -270,6 +264,7 @@ export function runOneTick<T>(deps: DaemonDeps<T>, state: TickState<T>): number 
     if (rec.ts <= (state.processedCompletionTs[name] ?? 0)) continue; // already accounted for
     state.processedCompletionTs[name] = rec.ts;
     const runningInfo = state.runningSlots[name];
+    if (!runningInfo) deps.log(`completion for ${name} has no running slot; recording with a synthesized start`);
     const slotTs = runningInfo?.slotTs ?? (rec.ts - rec.durationMs);
     const startedAt = runningInfo?.startedAt ?? (rec.ts - rec.durationMs);
     delete state.runningSlots[name];

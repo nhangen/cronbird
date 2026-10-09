@@ -91,13 +91,11 @@ function completionMap(raw: unknown): Record<string, CompletionRecord> {
   return out;
 }
 
-function runningSlotsMap(raw: unknown): Record<string, number | RunningSlotInfo> {
-  const out: Record<string, number | RunningSlotInfo> = {};
+function runningSlotsMap(raw: unknown): Record<string, RunningSlotInfo> {
+  const out: Record<string, RunningSlotInfo> = {};
   if (typeof raw === "object" && raw !== null) {
     for (const [name, v] of Object.entries(raw as Record<string, unknown>)) {
-      if (typeof v === "number" && Number.isFinite(v)) {
-        out[name] = v;
-      } else if (
+      if (
         typeof v === "object" &&
         v !== null &&
         typeof (v as RunningSlotInfo).slotTs === "number" &&
