@@ -11,12 +11,12 @@ describe("ShellDispatcher", () => {
     expect(calls).toEqual([["ceo-cron.sh", "morning-scan", "--scheduled"]]);
   });
 
-  test("a spawn error is logged and rethrown so daemon can isolate and record failure", () => {
+  test("a spawn error is rethrown unlogged so the daemon owns the failure log", () => {
     const logs: string[] = [];
     const d = new ShellDispatcher(["x"], ["{job}"], (m) => logs.push(m), () => {
       throw new Error("ENOENT");
     });
     expect(() => d.dispatch("job1")).toThrow("ENOENT");
-    expect(logs.some((l) => l.includes("dispatch failed") && l.includes("job1"))).toBe(true);
+    expect(logs.some((l) => l.includes("dispatch failed"))).toBe(false);
   });
 });
