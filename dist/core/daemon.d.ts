@@ -1,6 +1,6 @@
 import type { CronMatcher } from "./cron";
 import { RunQueue } from "./run-queue";
-import type { CompletionRecord, DispatchRecord, Heartbeat, Job, Topology } from "./types";
+import type { CompletionRecord, DispatchRecord, Heartbeat, Job, RunRecord, Topology } from "./types";
 export interface DaemonDeps<T = unknown> {
     now(): Date;
     sleep(ms: number): Promise<void>;
@@ -72,6 +72,12 @@ export interface DaemonDeps<T = unknown> {
      * clean success. Default resolver returns 0 (no cooldown).
      */
     cooldownSeconds(job: Job<T>): number;
+    /**
+     * Append-oriented run history sink. Injected provider called when a job is
+     * dispatched and when a completion is recorded. Optional for backward
+     * compatibility with minimal/test harnesses that don't track history.
+     */
+    recordRun?: (record: RunRecord) => void;
 }
 /**
  * Cross-tick mutable state that used to live in {@link runForever}'s closure.
@@ -101,6 +107,11 @@ export interface TickState<T = unknown> {
     lastSuccess: Record<string, number>;
     /** jobName → done.ts already accounted for, so a completion is processed once. */
     processedCompletionTs: Record<string, number>;
+    /** jobName → in-flight dispatch metadata (slotTs + startedAt) for completion correlation across ticks/restarts. */
+    runningSlots: Record<string, {
+        slotTs: number;
+        startedAt: number;
+    }>;
 }
 export declare function runForever<T>(deps: DaemonDeps<T>): Promise<void>;
 /**

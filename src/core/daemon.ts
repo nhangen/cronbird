@@ -17,7 +17,7 @@ import type { CronMatcher } from "./cron";
 import { failedJobs, isEligible, transitiveUpstreamFailed, validateDependencies } from "./dependencies";
 import { RunQueue } from "./run-queue";
 import { dueAt, nextWake, selectRunnable } from "./select";
-import type { CompletionRecord, DispatchRecord, Heartbeat, Job, Topology } from "./types";
+import type { CompletionRecord, DispatchRecord, Heartbeat, Job, RunRecord, Topology } from "./types";
 
 const MINUTE_MS = 60_000;
 /** How many recent dispatches to retain in the heartbeat for observability. */
@@ -87,6 +87,12 @@ export interface DaemonDeps<T = unknown> {
    * clean success. Default resolver returns 0 (no cooldown).
    */
   cooldownSeconds(job: Job<T>): number;
+  /**
+   * Append-oriented run history sink. Injected provider called when a job is
+   * dispatched and when a completion is recorded. Optional for backward
+   * compatibility with minimal/test harnesses that don't track history.
+   */
+  recordRun?: (record: RunRecord) => void;
 }
 
 /**
@@ -117,6 +123,8 @@ export interface TickState<T = unknown> {
   lastSuccess: Record<string, number>;
   /** jobName → done.ts already accounted for, so a completion is processed once. */
   processedCompletionTs: Record<string, number>;
+  /** jobName → in-flight dispatch metadata (slotTs + startedAt) for completion correlation across ticks/restarts. */
+  runningSlots: Record<string, { slotTs: number; startedAt: number }>;
 }
 
 function epochMinute(when: Date): number {
@@ -150,6 +158,21 @@ export async function runForever<T>(deps: DaemonDeps<T>): Promise<void> {
     processedCompletionTs: prior
       ? Object.fromEntries(Object.entries(prior.last_completed).map(([n, r]) => [n, r.ts]))
       : {},
+    runningSlots: (() => {
+      const rs: Record<string, { slotTs: number; startedAt: number }> = {};
+      if (prior) {
+        const slots = prior.running_slots ?? {};
+        const runs = prior.running ?? {};
+        for (const [name, startedAt] of Object.entries(runs)) {
+          const entry = slots[name];
+          rs[name] = { slotTs: entry?.slotTs ?? startedAt, startedAt: entry?.startedAt ?? startedAt };
+        }
+        for (const [name, entry] of Object.entries(slots)) {
+          if (!rs[name]) rs[name] = { slotTs: entry.slotTs, startedAt: entry.startedAt };
+        }
+      }
+      return rs;
+    })(),
   };
 
   while (deps.shouldContinue()) {
@@ -240,6 +263,28 @@ export function runOneTick<T>(deps: DaemonDeps<T>, state: TickState<T>): number 
   for (const [name, rec] of Object.entries(completions.done)) {
     if (rec.ts <= (state.processedCompletionTs[name] ?? 0)) continue; // already accounted for
     state.processedCompletionTs[name] = rec.ts;
+    const runningInfo = state.runningSlots[name];
+    if (!runningInfo) deps.log(`completion for ${name} has no running slot; recording with a synthesized start`);
+    const slotTs = runningInfo?.slotTs ?? (rec.ts - rec.durationMs);
+    const startedAt = runningInfo?.startedAt ?? (rec.ts - rec.durationMs);
+    delete state.runningSlots[name];
+
+    if (deps.recordRun) {
+      try {
+        deps.recordRun({
+          job: name,
+          scheduledFor: slotTs,
+          startedAt,
+          finishedAt: rec.ts,
+          exitCode: rec.exitCode,
+          outcome: rec.exitCode === 0 ? "success" : "failure",
+          durationMs: rec.durationMs,
+        });
+      } catch (err) {
+        deps.log(`recordRun completion failed for ${name}: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+
     if (rec.exitCode === 0) {
       state.lastSuccess[name] = rec.ts;
       state.attempts[name] = 0;
@@ -333,7 +378,7 @@ export function runOneTick<T>(deps: DaemonDeps<T>, state: TickState<T>): number 
   // at-most-once boundary: a crash after the write but before (or during) the
   // spawn drops the fire rather than doubling it — the restored queue no longer
   // lists a job we committed to spawning. Persist-before-spawn, queue-minus-drain.
-  const toDispatch: string[] = [];
+  const toDispatch: { name: string; slotTs: number }[] = [];
   let runningCount = Object.keys(completions.running).length;
   while (runningCount + toDispatch.length < MAX_CONCURRENT) {
     const candidate = state.queue
@@ -365,7 +410,8 @@ export function runOneTick<T>(deps: DaemonDeps<T>, state: TickState<T>): number 
     state.queue.remove(candidate.name);
     delete state.slotTsByName[candidate.name];
     state.lastRun[candidate.name] = now.getTime();
-    toDispatch.push(candidate.name);
+    toDispatch.push({ name: candidate.name, slotTs });
+    state.runningSlots[candidate.name] = { slotTs, startedAt: now.getTime() };
   }
 
   deps.writeHeartbeat({
@@ -378,6 +424,9 @@ export function runOneTick<T>(deps: DaemonDeps<T>, state: TickState<T>): number 
     last_fired: state.lastFired,
     queue: state.queue.snapshot().map((e) => ({ ...e, slotTs: state.slotTsByName[e.name] ?? now.getTime() })),
     running: completions.running,
+    running_slots: Object.fromEntries(
+      Object.entries(state.runningSlots).map(([k, v]) => [k, { slotTs: v.slotTs, startedAt: v.startedAt }])
+    ),
     last_completed: completions.done,
     attempts: state.attempts,
     last_run: state.lastRun,
@@ -387,11 +436,43 @@ export function runOneTick<T>(deps: DaemonDeps<T>, state: TickState<T>): number 
   // SPAWN after the durable write. A throwing dispatch is error-isolated; the job
   // was already removed from the queue, so a failed spawn drops the fire (retried
   // at its next slot) rather than wedging the chain.
-  for (const name of toDispatch) {
+  for (const item of toDispatch) {
+    const info = state.runningSlots[item.name] ?? { slotTs: item.slotTs, startedAt: now.getTime() };
+    if (deps.recordRun) {
+      try {
+        deps.recordRun({
+          job: item.name,
+          scheduledFor: info.slotTs,
+          startedAt: info.startedAt,
+          finishedAt: null,
+          exitCode: null,
+          outcome: "running",
+          durationMs: null,
+        });
+      } catch (err) {
+        deps.log(`recordRun dispatch failed for ${item.name}: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
     try {
-      deps.dispatch(name);
+      deps.dispatch(item.name);
     } catch (err) {
-      deps.log(`dispatch failed for ${name}: ${err instanceof Error ? err.message : String(err)}`);
+      delete state.runningSlots[item.name];
+      deps.log(`dispatch failed for ${item.name}: ${err instanceof Error ? err.message : String(err)}`);
+      if (deps.recordRun) {
+        try {
+          deps.recordRun({
+            job: item.name,
+            scheduledFor: info.slotTs,
+            startedAt: info.startedAt,
+            finishedAt: now.getTime(),
+            exitCode: 1,
+            outcome: "failure",
+            durationMs: 0,
+          });
+        } catch (rErr) {
+          deps.log(`recordRun failure recording failed for ${item.name}: ${rErr instanceof Error ? rErr.message : String(rErr)}`);
+        }
+      }
     }
   }
 

@@ -5,6 +5,7 @@ import { parseConfig } from "./config";
 import { fileJobProvider, fileEnabledProvider, fileTopologyProvider } from "./providers";
 import { ShellDispatcher } from "./shell-dispatcher";
 import { readHeartbeatFile, writeHeartbeatFile, writeSyncedHeartbeat, writeHeartbeatWithSync, PermanentHeartbeatWriteError } from "./heartbeat-file";
+import { createFileRunHistorySink, rotateRunHistoryFile } from "./history-file";
 import { runStatusCommand, STATUS_SUBCOMMANDS, type StatusSubcommand } from "./status";
 import { HELP_TOKENS, usageText } from "./usage";
 
@@ -91,7 +92,29 @@ async function main(): Promise<void> {
     // cooldown_seconds metadata) is wired alongside the dispatch wrapper — keeps
     // current behavior (no cooldown enforced in the engine yet).
     cooldownSeconds: () => 0,
+    recordRun: cfg.historyPath
+      ? createFileRunHistorySink(
+          cfg.historyPath,
+          {
+            maxRecords: cfg.maxHistoryRecords ?? undefined,
+            maxAgeMs: cfg.historyRetentionMs ?? undefined,
+          },
+          undefined,
+          log,
+        )
+      : undefined,
   };
+
+  if (cfg.historyPath) {
+    try {
+      rotateRunHistoryFile(cfg.historyPath, {
+        maxRecords: cfg.maxHistoryRecords ?? undefined,
+        maxAgeMs: cfg.historyRetentionMs ?? undefined,
+      });
+    } catch (err) {
+      log(`initial history rotation warning: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
 
   log(`started — host=${cfg.hostname} registry=${cfg.registryPath}`);
   await runForever(deps);

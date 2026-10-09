@@ -8,8 +8,9 @@
  * command renders, and the data any future dashboard would read.
  */
 import type { CronMatcher } from "./cron";
+import { mergeRunRecords } from "./history";
 import { selectRunnable } from "./select";
-import type { Heartbeat, Job } from "./types";
+import type { Heartbeat, Job, RunRecord } from "./types";
 
 export type JobHealth =
   /** `isActive === false` — the daemon never fires it. */
@@ -40,6 +41,8 @@ export interface JobStatus {
    *  schedule never fires again, or when the expression is invalid. */
   nextFire: number | null;
   health: JobHealth;
+  /** Most recent run record from history, or null if absent/never run. */
+  lastRun?: RunRecord | null;
 }
 
 export interface StatusReport {
@@ -82,16 +85,30 @@ export function computeStatus<T>(args: {
   matcher: CronMatcher;
   now: Date;
   options: StatusOptions;
+  history?: RunRecord[];
 }): StatusReport {
-  const { jobs, host, enabled, owners, heartbeat, matcher, now, options } = args;
+  const { jobs, host, enabled, owners, heartbeat, matcher, now, options, history } = args;
   const nowMs = now.getTime();
   const runnableNames = new Set(selectRunnable(jobs, host, enabled, owners).map((j) => j.name));
   const lastFiredMap = heartbeat?.last_fired ?? {};
 
+  const latestRunByJob = new Map<string, RunRecord>();
+  if (history && history.length > 0) {
+    const merged = mergeRunRecords(history);
+    merged.sort((a, b) => {
+      if (a.scheduledFor !== b.scheduledFor) return a.scheduledFor - b.scheduledFor;
+      return a.startedAt - b.startedAt;
+    });
+    for (const r of merged) {
+      latestRunByJob.set(r.job, r);
+    }
+  }
+
   const jobStatuses: JobStatus[] = jobs.map((j) => {
     const runnable = runnableNames.has(j.name);
+    const run = latestRunByJob.get(j.name) ?? null;
     const lf = lastFiredMap[j.name];
-    const lastFired = typeof lf === "number" ? lf : null;
+    const lastFired = typeof lf === "number" ? lf : (run ? run.scheduledFor : null);
 
     let nextFire: number | null = null;
     if (runnable) {
@@ -112,6 +129,7 @@ export function computeStatus<T>(args: {
       lastFired,
       nextFire,
       health: deriveHealth(j, runnable, lastFired, matcher, nowMs, options.staleGraceMs),
+      lastRun: run,
     };
   });
 

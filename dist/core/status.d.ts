@@ -8,7 +8,7 @@
  * command renders, and the data any future dashboard would read.
  */
 import type { CronMatcher } from "./cron";
-import type { Heartbeat, Job } from "./types";
+import type { Heartbeat, Job, RunRecord } from "./types";
 export type JobHealth = 
 /** `isActive === false` — the daemon never fires it. */
 "inactive"
@@ -37,6 +37,8 @@ export interface JobStatus {
      *  schedule never fires again, or when the expression is invalid. */
     nextFire: number | null;
     health: JobHealth;
+    /** Most recent run record from history, or null if absent/never run. */
+    lastRun?: RunRecord | null;
 }
 export interface StatusReport {
     host: string;
@@ -76,4 +78,5 @@ export declare function computeStatus<T>(args: {
     matcher: CronMatcher;
     now: Date;
     options: StatusOptions;
+    history?: RunRecord[];
 }): StatusReport;

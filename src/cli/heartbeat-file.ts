@@ -7,7 +7,7 @@
  */
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
-import type { CompletionRecord, DispatchRecord, Heartbeat, QueueEntry } from "../core/index";
+import type { CompletionRecord, DispatchRecord, Heartbeat, QueueEntry, RunningSlotInfo } from "../core/index";
 
 export function readHeartbeatFile(path: string): Heartbeat | null {
   if (!existsSync(path)) return null;
@@ -42,6 +42,7 @@ export function readHeartbeatFile(path: string): Heartbeat | null {
     // never crashes at boot, never fabricates entries.
     queue: queueEntries(r.queue),
     running: numericMap(r.running),
+    ...(r.running_slots !== undefined ? { running_slots: runningSlotsMap(r.running_slots) } : {}),
     last_completed: completionMap(r.last_completed),
     attempts: numericMap(r.attempts),
     last_run: numericMap(r.last_run),
@@ -84,6 +85,28 @@ function completionMap(raw: unknown): Record<string, CompletionRecord> {
       ) {
         const { ts, exitCode, durationMs } = v as CompletionRecord;
         out[name] = { ts, exitCode, durationMs };
+      }
+    }
+  }
+  return out;
+}
+
+function runningSlotsMap(raw: unknown): Record<string, RunningSlotInfo> {
+  const out: Record<string, RunningSlotInfo> = {};
+  if (typeof raw === "object" && raw !== null) {
+    for (const [name, v] of Object.entries(raw as Record<string, unknown>)) {
+      if (
+        typeof v === "object" &&
+        v !== null &&
+        typeof (v as RunningSlotInfo).slotTs === "number" &&
+        Number.isFinite((v as RunningSlotInfo).slotTs) &&
+        typeof (v as RunningSlotInfo).startedAt === "number" &&
+        Number.isFinite((v as RunningSlotInfo).startedAt)
+      ) {
+        out[name] = {
+          slotTs: (v as RunningSlotInfo).slotTs,
+          startedAt: (v as RunningSlotInfo).startedAt,
+        };
       }
     }
   }

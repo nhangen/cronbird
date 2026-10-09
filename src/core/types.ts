@@ -41,6 +41,28 @@ export interface CompletionRecord {
   durationMs: number;
 }
 
+export type RunOutcome = "running" | "success" | "failure";
+
+export interface RunRecord {
+  job: string;
+  /** epoch-ms of the scheduled slot (from queue entry / slotTs). */
+  scheduledFor: number;
+  /** epoch-ms when dispatch was initiated. */
+  startedAt: number;
+  /** epoch-ms when dispatch finished; null if in-flight. */
+  finishedAt: number | null;
+  /** exit code of the completed run; null if in-flight or killed. */
+  exitCode: number | null;
+  outcome: RunOutcome;
+  /** Execution duration in ms (finishedAt - startedAt, or from CompletionRecord); null if in-flight. */
+  durationMs: number | null;
+}
+
+export interface RunningSlotInfo {
+  slotTs: number;
+  startedAt: number;
+}
+
 export interface Heartbeat {
   ts: number;
   host: string;
@@ -55,6 +77,8 @@ export interface Heartbeat {
   queue: QueueEntry[];
   /** jobName → startedTs of an in-flight run (restored from running/ dir). */
   running: Record<string, number>;
+  /** jobName → scheduled slot and start epoch-ms for an in-flight run (drives completion correlation across restarts). */
+  running_slots?: Record<string, RunningSlotInfo>;
   /** jobName → last completion (exit code + duration) for cooldown + metrics. */
   last_completed: Record<string, CompletionRecord>;
   /** jobName → consecutive failed attempts since last success (retry counter). */

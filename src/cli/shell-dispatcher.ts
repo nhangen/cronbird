@@ -18,11 +18,7 @@ export class ShellDispatcher {
   }
 
   dispatch(jobName: string): void {
-    try {
-      this.spawn(this.argv(jobName));
-      this.log(`dispatched ${jobName}`);
-    } catch (err) {
-      this.log(`dispatch failed for ${jobName}: ${err instanceof Error ? err.message : String(err)}`);
-    }
+    this.spawn(this.argv(jobName));
+    this.log(`dispatched ${jobName}`);
   }
 }

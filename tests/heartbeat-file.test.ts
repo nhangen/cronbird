@@ -83,6 +83,23 @@ describe("heartbeat round-trip", () => {
     );
     expect(readHeartbeatFile(path)!.last_fired).toEqual({ good: 99 });
   });
+
+  test("running_slots round-trips and drops malformed entries", () => {
+    const file = join(dir, "hb-slots.json");
+    writeFileSync(
+      file,
+      JSON.stringify({
+        ...hb,
+        running_slots: {
+          good: { slotTs: 10, startedAt: 20 },
+          legacyNumber: 10,
+          missingStart: { slotTs: 10 },
+          nan: { slotTs: "x", startedAt: 20 },
+        },
+      }),
+    );
+    expect(readHeartbeatFile(file)!.running_slots).toEqual({ good: { slotTs: 10, startedAt: 20 } });
+  });
 });
 
 describe("synced heartbeat", () => {

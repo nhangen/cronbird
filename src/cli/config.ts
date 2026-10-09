@@ -9,6 +9,9 @@ export interface CronbirdConfig {
   topologyPath: string | null;
   heartbeatPath: string;
   syncedHeartbeatDir: string | null;
+  historyPath: string | null;
+  maxHistoryRecords: number | null;
+  historyRetentionMs: number | null;
   dispatchCommand: string[];
   dispatchArgsTemplate: string[];
   maxSleepMs: number;
@@ -65,6 +68,13 @@ function reqPosInt(o: Record<string, unknown>, k: string): number {
   return v;
 }
 
+function optPosInt(o: Record<string, unknown>, k: string): number | null {
+  const v = o[k];
+  if (v === null || v === undefined) return null;
+  if (typeof v !== "number" || !Number.isInteger(v) || v <= 0) throw new ConfigError(`config.${k} must be a positive integer or null`);
+  return v;
+}
+
 export function parseConfig(raw: string, env: Record<string, string | undefined>): CronbirdConfig {
   let o: Record<string, unknown>;
   try {
@@ -82,6 +92,9 @@ export function parseConfig(raw: string, env: Record<string, string | undefined>
     topologyPath: (() => { const tp = optString(o, "topologyPath"); return tp ? expandTilde(tp, home) : null; })(),
     heartbeatPath: expandTilde(reqString(o, "heartbeatPath"), home),
     syncedHeartbeatDir: (() => { const sd = optString(o, "syncedHeartbeatDir"); return sd ? expandTilde(sd, home) : null; })(),
+    historyPath: (() => { const hp = optString(o, "historyPath"); return hp ? expandTilde(hp, home) : null; })(),
+    maxHistoryRecords: optPosInt(o, "maxHistoryRecords"),
+    historyRetentionMs: optPosInt(o, "historyRetentionMs"),
     dispatchCommand: reqStringArray(o, "dispatchCommand"),
     dispatchArgsTemplate: reqDispatchArgsTemplate(o),
     maxSleepMs: reqPosInt(o, "maxSleepMs"),
