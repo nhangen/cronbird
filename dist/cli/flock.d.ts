@@ -1,6 +1,10 @@
 export interface FlockHandle {
     release(): void;
 }
+export interface LibcFlock {
+    flock(fd: number, operation: number): number;
+    errno(): number;
+}
 /**
  * Acquire an exclusive, non-blocking advisory lock on `lockPath`.
  *
@@ -10,4 +14,4 @@ export interface FlockHandle {
  * - A no-op {@link FlockHandle} if libc/FFI is unsupported or fails with an unrecoverable fs error,
  *   so unsupported platforms fail open rather than halting the daemon.
  */
-export declare function acquireFlock(lockPath: string, log?: (msg: string) => void): FlockHandle | null;
+export declare function acquireFlock(lockPath: string, log?: (msg: string) => void, libcOverride?: LibcFlock): FlockHandle | null;

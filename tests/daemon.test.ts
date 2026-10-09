@@ -30,14 +30,16 @@ const h0Heartbeat = (over: {
   last_success?: Record<string, number>;
   running?: Record<string, number>;
   running_slots?: Record<string, { slotTs: number; startedAt: number }>;
+  dispatched_minute?: Record<string, number>;
+  last_fired?: Record<string, number>;
 }): Heartbeat => ({
   ts: 0,
   host: "ml-1",
   runnable_count: 0,
   next_wake_ts: 0,
   last_dispatch: [],
-  dispatched_minute: {},
-  last_fired: {},
+  dispatched_minute: over.dispatched_minute ?? {},
+  last_fired: over.last_fired ?? {},
   queue: over.queue ?? [],
   running: over.running ?? {},
   ...(over.running_slots !== undefined ? { running_slots: over.running_slots } : {}),
@@ -286,11 +288,9 @@ describe("double-fire guard", () => {
     expect(h.dispatched).toEqual(["ev", "ev"]);
   });
 
-  test("NTP backward step >1 min does not re-fire even when guard was pruned (gilfoyle G3)", async () => {
-    // Minute 103: ev fires.
-    // Minute 105: prune drops 103 from state.guard because 103 < 105 - 1 = 104.
-    // Backward step: clock jumps from 105 back to 103 (where state.guard has no 103 entry).
-    // lastFired >= minuteStart prevents re-firing.
+  test("NTP backward step >1 min does not re-fire (gilfoyle G3)", async () => {
+    // Minute 103: ev fires. Minute 105: ev fires again and its guard entry moves to 105.
+    // Backward step to 103: the guard entry (105) still blocks the re-fire.
     const h = harness({
       nows: [
         d("2026-06-01T09:03:05Z"), // minute 103: fires
@@ -303,6 +303,40 @@ describe("double-fire guard", () => {
     await runForever(h.deps);
     // 09:03, 09:05, 09:06 (3 fires total). Zero re-fires on the stepped-back 09:03!
     expect(h.dispatched).toEqual(["ev", "ev", "ev"]);
+  });
+
+  test("restart with empty dispatched_minute suppresses re-fire via last_fired >= minuteStart in isolation", async () => {
+    // Daemon restarts after minute 105 (09:05:00) with empty dispatched_minute, but last_fired intact.
+    // Clock at restart steps back to minute 103 (09:03:30).
+    // state.guard is empty, so last_fired >= minuteStart ALONE prevents re-firing.
+    const h = harness({
+      startHeartbeat: h0Heartbeat({
+        dispatched_minute: {},
+        last_fired: { ev: d("2026-06-01T09:05:00Z").getTime() },
+      }),
+      nows: [
+        d("2026-06-01T09:03:30Z"), // minute 103: suppressed by last_fired >= minuteStart
+        d("2026-06-01T09:06:05Z"), // minute 106: fresh slot fires
+      ],
+      playbooks: [pb({ name: "ev", cronSchedule: "* * * * *" })],
+    });
+    await runForever(h.deps);
+    // Fires only on 09:06:05; zero fires on 09:03:30.
+    expect(h.dispatched).toEqual(["ev"]);
+  });
+
+  test("forward clock warp (>24h) clamps last_fired and recovers on subsequent ticks", async () => {
+    const h = harness({
+      nows: [
+        d("2026-06-02T10:00:05Z"), // +25h in the future: fires and stamps last_fired = 2026-06-02T10:00:00Z
+        d("2026-06-01T09:00:05Z"), // clock corrected back to T0: clamps last_fired to now
+        d("2026-06-01T09:01:05Z"), // next minute fires
+      ],
+      playbooks: [pb({ name: "ev", cronSchedule: "* * * * *" })],
+    });
+    await runForever(h.deps);
+    expect(h.dispatched).toEqual(["ev", "ev"]);
+    expect(h.logs.some((l) => l.includes("clock warp: clamping future last_fired for ev"))).toBe(true);
   });
 });
 

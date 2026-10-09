@@ -62,7 +62,6 @@ async function main(): Promise<void> {
     log(`${sig} received, shutting down`);
     running = false;
     wakeEarly?.();
-    lockHandle?.release();
   };
   process.on("SIGTERM", () => stop("SIGTERM"));
   process.on("SIGINT", () => stop("SIGINT"));

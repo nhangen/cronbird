@@ -9,7 +9,7 @@ export interface FlockHandle {
   release(): void;
 }
 
-interface LibcFlock {
+export interface LibcFlock {
   flock(fd: number, operation: number): number;
   errno(): number;
 }
@@ -31,14 +31,20 @@ function getLibc(): LibcFlock | null {
     return null;
   }
 
+  const errnoSymbol = process.platform === "darwin" ? "__error" : "__errno_location";
+
   try {
     // Dynamic import of bun:ffi so environments without FFI don't fail at module load
     // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const { dlopen, FFIType } = require("bun:ffi");
+    const { dlopen, FFIType, toArrayBuffer } = require("bun:ffi");
     const libc = dlopen(libName, {
       flock: {
         args: [FFIType.i32, FFIType.i32],
         returns: FFIType.i32,
+      },
+      [errnoSymbol]: {
+        args: [],
+        returns: FFIType.ptr,
       },
     });
 
@@ -46,9 +52,12 @@ function getLibc(): LibcFlock | null {
       flock: (fd: number, op: number) => libc.symbols.flock(fd, op),
       errno: () => {
         try {
-          return (process as { errno?: number }).errno ?? 0;
+          const ptr = libc.symbols[errnoSymbol]();
+          if (!ptr) return -1;
+          const dv = new DataView(toArrayBuffer(ptr, 0, 4));
+          return dv.getInt32(0, true);
         } catch {
-          return 0;
+          return -1;
         }
       },
     };
@@ -68,8 +77,12 @@ function getLibc(): LibcFlock | null {
  * - A no-op {@link FlockHandle} if libc/FFI is unsupported or fails with an unrecoverable fs error,
  *   so unsupported platforms fail open rather than halting the daemon.
  */
-export function acquireFlock(lockPath: string, log?: (msg: string) => void): FlockHandle | null {
-  const libc = getLibc();
+export function acquireFlock(
+  lockPath: string,
+  log?: (msg: string) => void,
+  libcOverride?: LibcFlock,
+): FlockHandle | null {
+  const libc = libcOverride ?? getLibc();
   if (!libc) {
     log?.(`flock: platform ${process.platform} or bun:ffi not supported; running without single-instance lock`);
     return { release: () => {} };
@@ -109,17 +122,19 @@ export function acquireFlock(lockPath: string, log?: (msg: string) => void): Flo
     }
 
     // flock returned -1
-    // In POSIX, EWOULDBLOCK is usually 35 on Darwin and 11 on Linux (EAGAIN)
-    // Close the descriptor immediately
+    // Read errno immediately before closing fd (closeSync may alter errno)
+    const err = libc.errno();
+
     try {
       closeSync(fd);
     } catch {
       // Ignore
     }
 
-    const err = libc.errno();
     // 35 = EWOULDBLOCK on Darwin; 11 = EAGAIN/EWOULDBLOCK on Linux
-    const isContention = err === 35 || err === 11 || err === 0;
+    const isContention =
+      (process.platform === "darwin" && err === 35) ||
+      (process.platform === "linux" && err === 11);
     if (isContention) {
       return null;
     }
