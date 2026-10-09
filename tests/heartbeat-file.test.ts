@@ -1,5 +1,5 @@
 import { afterAll, describe, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Heartbeat } from "../src/core/index";
@@ -44,11 +44,11 @@ describe("heartbeat round-trip", () => {
     expect(readHeartbeatFile(path)).toEqual({ value: hb, warnings: [] });
   });
 
-  test("missing file reads as null (guard simply starts empty)", () => {
+  test("missing file: null value and no warning (guard simply starts empty)", () => {
     expect(readHeartbeatFile(join(dir, "nope.json"))).toEqual({ value: null, warnings: [] });
   });
 
-  test("malformed JSON reads as null rather than throwing at startup", () => {
+  test("malformed JSON: null value plus an unparseable warning, no throw at startup", () => {
     const path = join(dir, "corrupt.json");
     writeFileSync(path, "{ this is not json");
     const res = readHeartbeatFile(path);
@@ -56,7 +56,7 @@ describe("heartbeat round-trip", () => {
     expect(res.warnings).toEqual([`heartbeat file present but unparseable: ${path}`]);
   });
 
-  test("structurally wrong heartbeat (no dispatched_minute) reads as null", () => {
+  test("structurally wrong heartbeat (no dispatched_minute): null value plus unparseable warning", () => {
     const path = join(dir, "wrong.json");
     writeFileSync(path, JSON.stringify({ ts: 1, host: "x" }));
     const res = readHeartbeatFile(path);
@@ -217,5 +217,24 @@ describe("isPermanentLocalWriteError", () => {
     expect(isPermanentLocalWriteError(new Error("no code"))).toBe(false);
     expect(isPermanentLocalWriteError(null)).toBe(false);
     expect(isPermanentLocalWriteError("EROFS")).toBe(false);
+  });
+});
+
+describe("heartbeat read errors", () => {
+  test("a directory at the heartbeat path warns 'unreadable' with the errno, not 'unparseable'", () => {
+    const path = join(dir, "hb-as-dir");
+    mkdirSync(path);
+    const res = readHeartbeatFile(path);
+    expect(res.value).toBeNull();
+    expect(res.warnings).toEqual([`heartbeat file present but unreadable: ${path} (EISDIR)`]);
+  });
+
+  test("non-object JSON and a non-numeric ts both warn unparseable", () => {
+    const a = join(dir, "hb-null.json");
+    writeFileSync(a, "null");
+    expect(readHeartbeatFile(a).warnings).toEqual([`heartbeat file present but unparseable: ${a}`]);
+    const b = join(dir, "hb-badts.json");
+    writeFileSync(b, JSON.stringify({ ts: "x", dispatched_minute: {} }));
+    expect(readHeartbeatFile(b).warnings).toEqual([`heartbeat file present but unparseable: ${b}`]);
   });
 });

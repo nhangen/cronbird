@@ -2,8 +2,10 @@
  * Durable persistence for the daemon heartbeat. The heartbeat doubles as the
  * double-fire guard's backing store (H1): on startup the daemon restores
  * `dispatched_minute` from here, so a `Restart=always` crash inside a fire-minute
- * does not re-run a playbook. A corrupt or missing file reads as `null` — the
- * guard starts empty rather than crashing the daemon at boot.
+ * does not re-run a playbook. A missing file reads as `{ value: null }` with no
+ * warning; a present-but-unreadable or corrupt one also reads as `null` but adds a
+ * warning so callers can tell the two apart. Either way the guard starts empty
+ * rather than crashing the daemon at boot.
  */
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
@@ -15,9 +17,17 @@ export function readHeartbeatFile(path: string): { value: Heartbeat | null; warn
     value: null,
     warnings: [`heartbeat file present but unparseable: ${path}`],
   });
+  let text: string;
+  try {
+    text = readFileSync(path, "utf8");
+  } catch (e) {
+    const code = (e as NodeJS.ErrnoException).code ?? "unknown";
+    if (code === "ENOENT") return { value: null, warnings: [] };
+    return { value: null, warnings: [`heartbeat file present but unreadable: ${path} (${code})`] };
+  }
   let raw: unknown;
   try {
-    raw = JSON.parse(readFileSync(path, "utf8"));
+    raw = JSON.parse(text);
   } catch {
     return warn();
   }

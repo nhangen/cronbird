@@ -65,38 +65,45 @@ export function parseTopologyJson(text: string | null, path?: string): { value: 
   return { value: null, warnings: [warn] };
 }
 
+type Sidecar = { kind: "ok"; text: string } | { kind: "absent" } | { kind: "unreadable"; code: string };
+
+// ENOENT between existsSync and the read is a vanished file — absent, not corrupt.
+// Anything else (EISDIR, EACCES, EIO) is present-but-unreadable and keeps its errno.
+function readSidecar(path: string): Sidecar {
+  try {
+    return { kind: "ok", text: readFileSync(path, "utf8") };
+  } catch (e) {
+    const code = (e as NodeJS.ErrnoException).code ?? "unknown";
+    return code === "ENOENT" ? { kind: "absent" } : { kind: "unreadable", code };
+  }
+}
+
 export function fileJobProvider(path: string): () => { jobs: Job[]; value: Job[]; warnings: string[]; ok: boolean } {
   return () => {
     if (!existsSync(path)) return { jobs: [], value: [], warnings: [`registry file not found: ${path}`], ok: false };
-    try {
-      const text = readFileSync(path, "utf8");
-      return parseJobsJson(text);
-    } catch {
-      return { jobs: [], value: [], warnings: [`registry file not found: ${path}`], ok: false };
-    }
+    const r = readSidecar(path);
+    if (r.kind === "ok") return parseJobsJson(r.text);
+    const warning = r.kind === "absent" ? `registry file not found: ${path}` : `registry file unreadable: ${path} (${r.code})`;
+    return { jobs: [], value: [], warnings: [warning], ok: false };
   };
 }
 
 export function fileEnabledProvider(path: string | null): () => { value: Set<string>; warnings: string[] } {
   return () => {
     if (!path || !existsSync(path)) return { value: new Set(), warnings: [] };
-    try {
-      const text = readFileSync(path, "utf8");
-      return parseEnabledJson(text, path);
-    } catch {
-      return { value: new Set(), warnings: [`enabled file present but unparseable: ${path}`] };
-    }
+    const r = readSidecar(path);
+    if (r.kind === "ok") return parseEnabledJson(r.text, path);
+    if (r.kind === "absent") return { value: new Set(), warnings: [] };
+    return { value: new Set(), warnings: [`enabled file present but unreadable: ${path} (${r.code})`] };
   };
 }
 
 export function fileTopologyProvider(path: string | null): () => { value: Topology | null; warnings: string[] } {
   return () => {
     if (!path || !existsSync(path)) return { value: null, warnings: [] };
-    try {
-      const text = readFileSync(path, "utf8");
-      return parseTopologyJson(text, path);
-    } catch {
-      return { value: null, warnings: [`topology file present but unparseable: ${path}`] };
-    }
+    const r = readSidecar(path);
+    if (r.kind === "ok") return parseTopologyJson(r.text, path);
+    if (r.kind === "absent") return { value: null, warnings: [] };
+    return { value: null, warnings: [`topology file present but unreadable: ${path} (${r.code})`] };
   };
 }

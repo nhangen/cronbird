@@ -125,3 +125,39 @@ describe("providers", () => {
     expect(fileJobProvider(missingPath)().ok).toBe(false);
   });
 });
+
+describe("providers: unreadable sidecars (read error is not a parse error)", () => {
+  const asDir = (): string => mkdtempSync(join(tmpdir(), "cronbird-asdir-"));
+
+  test("fileEnabledProvider on a directory warns 'unreadable' with the errno, not 'unparseable'", () => {
+    const d = asDir();
+    try {
+      const res = fileEnabledProvider(d)();
+      expect(res.value.size).toBe(0);
+      expect(res.warnings).toEqual([`enabled file present but unreadable: ${d} (EISDIR)`]);
+    } finally { rmSync(d, { recursive: true, force: true }); }
+  });
+
+  test("fileTopologyProvider on a directory warns 'unreadable' with the errno", () => {
+    const d = asDir();
+    try {
+      const res = fileTopologyProvider(d)();
+      expect(res.value).toBeNull();
+      expect(res.warnings).toEqual([`topology file present but unreadable: ${d} (EISDIR)`]);
+    } finally { rmSync(d, { recursive: true, force: true }); }
+  });
+
+  test("fileJobProvider on a directory is ok:false and says unreadable, not 'not found'", () => {
+    const d = asDir();
+    try {
+      const res = fileJobProvider(d)();
+      expect(res.ok).toBe(false);
+      expect(res.warnings).toEqual([`registry file unreadable: ${d} (EISDIR)`]);
+    } finally { rmSync(d, { recursive: true, force: true }); }
+  });
+
+  test("valid JSON of the wrong shape still warns unparseable (enabled not an array, topology missing owners)", () => {
+    expect(parseEnabledJson("{}", "/p").warnings).toEqual(["enabled file present but unparseable: /p"]);
+    expect(parseTopologyJson(JSON.stringify({ hosts: [] }), "/p").warnings).toEqual(["topology file present but unparseable: /p"]);
+  });
+});
