@@ -95,17 +95,22 @@ describe("acquireFlock", () => {
     }
   });
 
-  test("release() is idempotent and does not throw on multiple invocations", () => {
+  test("a repeated release() does not close an fd the process has since reused", () => {
     const dir = mkdtempSync(join(tmpdir(), "cronbird-flock-idempotent-"));
     const lockPath = join(dir, "cronbird.lock");
     try {
       const lock = acquireFlock(lockPath);
       expect(lock).not.toBeNull();
-      expect(() => {
-        lock?.release();
-        lock?.release();
-        lock?.release();
-      }).not.toThrow();
+      lock?.release();
+
+      // The freed fd number is handed to the next open, so a stray second
+      // release() on the first handle would unlock and close this one.
+      const reused = acquireFlock(lockPath);
+      expect(reused).not.toBeNull();
+      lock?.release();
+
+      expect(acquireFlock(lockPath)).toBeNull();
+      reused?.release();
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
