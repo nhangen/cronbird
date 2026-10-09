@@ -9,18 +9,22 @@ import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "
 import { dirname } from "node:path";
 import type { CompletionRecord, DispatchRecord, Heartbeat, QueueEntry, RunningSlotInfo } from "../core/index";
 
-export function readHeartbeatFile(path: string): Heartbeat | null {
-  if (!existsSync(path)) return null;
+export function readHeartbeatFile(path: string): { value: Heartbeat | null; warnings: string[] } {
+  if (!existsSync(path)) return { value: null, warnings: [] };
+  const warn = (): { value: Heartbeat | null; warnings: string[] } => ({
+    value: null,
+    warnings: [`heartbeat file present but unparseable: ${path}`],
+  });
   let raw: unknown;
   try {
     raw = JSON.parse(readFileSync(path, "utf8"));
   } catch {
-    return null;
+    return warn();
   }
-  if (typeof raw !== "object" || raw === null) return null;
+  if (typeof raw !== "object" || raw === null) return warn();
   const r = raw as Record<string, unknown>;
-  if (typeof r.ts !== "number") return null;
-  if (typeof r.dispatched_minute !== "object" || r.dispatched_minute === null) return null;
+  if (typeof r.ts !== "number") return warn();
+  if (typeof r.dispatched_minute !== "object" || r.dispatched_minute === null) return warn();
   const lastDispatch = Array.isArray(r.last_dispatch) ? (r.last_dispatch as DispatchRecord[]) : [];
   // Drop any non-numeric guard value: a string slipping in would never `===`
   // the current epoch-minute, silently disabling the double-fire guard for that
@@ -30,23 +34,26 @@ export function readHeartbeatFile(path: string): Heartbeat | null {
   // heartbeats) reads as empty so the daemon simply re-baselines.
   const lastFired = numericMap(r.last_fired);
   return {
-    ts: r.ts,
-    host: typeof r.host === "string" ? r.host : "",
-    runnable_count: typeof r.runnable_count === "number" ? r.runnable_count : 0,
-    next_wake_ts: typeof r.next_wake_ts === "number" ? r.next_wake_ts : 0,
-    last_dispatch: lastDispatch,
-    dispatched_minute: dispatchedMinute,
-    last_fired: lastFired,
-    // Scheduler backlog + retry state. Absent (pre-priority-chain heartbeats) or
-    // malformed reads as empty so the daemon simply starts with a clean queue —
-    // never crashes at boot, never fabricates entries.
-    queue: queueEntries(r.queue),
-    running: numericMap(r.running),
-    ...(r.running_slots !== undefined ? { running_slots: runningSlotsMap(r.running_slots) } : {}),
-    last_completed: completionMap(r.last_completed),
-    attempts: numericMap(r.attempts),
-    last_run: numericMap(r.last_run),
-    last_success: numericMap(r.last_success),
+    value: {
+      ts: r.ts,
+      host: typeof r.host === "string" ? r.host : "",
+      runnable_count: typeof r.runnable_count === "number" ? r.runnable_count : 0,
+      next_wake_ts: typeof r.next_wake_ts === "number" ? r.next_wake_ts : 0,
+      last_dispatch: lastDispatch,
+      dispatched_minute: dispatchedMinute,
+      last_fired: lastFired,
+      // Scheduler backlog + retry state. Absent (pre-priority-chain heartbeats) or
+      // malformed reads as empty so the daemon simply starts with a clean queue —
+      // never crashes at boot, never fabricates entries.
+      queue: queueEntries(r.queue),
+      running: numericMap(r.running),
+      ...(r.running_slots !== undefined ? { running_slots: runningSlotsMap(r.running_slots) } : {}),
+      last_completed: completionMap(r.last_completed),
+      attempts: numericMap(r.attempts),
+      last_run: numericMap(r.last_run),
+      last_success: numericMap(r.last_success),
+    },
+    warnings: [],
   };
 }
 

@@ -4,7 +4,7 @@
  * enabled / topology / heartbeat via the existing file providers, and renders a
  * projection of {@link computeStatus}. No scheduling, no writes.
  */
-import { existsSync, readFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { computeStatus, createMatcher, queryRunHistory, STALE_EXIT_CODE, type JobStatus, type RunRecord, type StatusReport } from "../core/index";
 import { parseConfig } from "./config";
 import { readHeartbeatFile } from "./heartbeat-file";
@@ -103,24 +103,13 @@ export function runStatusCommand(sub: StatusSubcommand, args: string[], deps: St
   let report: StatusReport;
   try {
     const cfg = parseConfig(readFileSync(configPath, "utf8"), deps.env);
-    const { jobs, warnings } = fileJobProvider(cfg.registryPath)();
-    // Surface registry parse warnings (missing file, corrupt JSON, skipped
-    // rows) — a status tool that prints an empty table on a broken registry
-    // is indistinguishable from "no jobs". Diagnostic, not fatal: still exit 0.
-    for (const w of warnings) deps.err(`warning: ${w}\n`);
-    const enabled = fileEnabledProvider(cfg.enabledPath)();
-    // A sidecar that exists but reads as null/absent is corrupt — warn rather
-    // than silently rendering it as "not-runnable" / "no heartbeat", which
-    // would masquerade as a different (daemon) problem. Same rationale as the
-    // registry warnings above; the enabled-set corruption case (empty-set is
-    // ambiguous with a valid empty list) is tracked separately as a follow-up.
-    const topology = fileTopologyProvider(cfg.topologyPath)();
-    if (cfg.topologyPath && topology === null && existsSync(cfg.topologyPath)) {
-      deps.err(`warning: topology file present but unparseable: ${cfg.topologyPath}\n`);
-    }
-    const heartbeat = readHeartbeatFile(cfg.heartbeatPath);
-    if (heartbeat === null && existsSync(cfg.heartbeatPath)) {
-      deps.err(`warning: heartbeat file present but unparseable: ${cfg.heartbeatPath}\n`);
+    const registryResult = fileJobProvider(cfg.registryPath)();
+    const enabledResult = fileEnabledProvider(cfg.enabledPath)();
+    const topologyResult = fileTopologyProvider(cfg.topologyPath)();
+    const heartbeatResult = readHeartbeatFile(cfg.heartbeatPath);
+
+    for (const { warnings } of [registryResult, enabledResult, topologyResult, heartbeatResult]) {
+      for (const w of warnings) deps.err(`warning: ${w}\n`);
     }
     let history: RunRecord[] | undefined;
     if (cfg.historyPath) {
@@ -131,11 +120,11 @@ export function runStatusCommand(sub: StatusSubcommand, args: string[], deps: St
       }
     }
     report = computeStatus({
-      jobs,
+      jobs: registryResult.jobs,
       host: cfg.hostname,
-      enabled,
-      owners: topology?.owners ?? {},
-      heartbeat,
+      enabled: enabledResult.value,
+      owners: topologyResult.value?.owners ?? {},
+      heartbeat: heartbeatResult.value,
       matcher: createMatcher(),
       now: deps.now(),
       // Above the wake cap so a just-woken daemon isn't flagged stale — for both

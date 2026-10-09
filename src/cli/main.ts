@@ -62,10 +62,10 @@ async function main(): Promise<void> {
       wakeEarly = () => { clearTimeout(t); wakeEarly = null; resolve(); };
     }),
     loadRegistry: fileJobProvider(cfg.registryPath),
-    loadEnabled: fileEnabledProvider(cfg.enabledPath),
-    loadTopology: fileTopologyProvider(cfg.topologyPath),
+    loadEnabled: () => fileEnabledProvider(cfg.enabledPath)().value,
+    loadTopology: () => fileTopologyProvider(cfg.topologyPath)().value,
     dispatch: (name) => dispatcher.dispatch(name),
-    readHeartbeat: () => readHeartbeatFile(cfg.heartbeatPath),
+    readHeartbeat: () => readHeartbeatFile(cfg.heartbeatPath).value,
     writeHeartbeat: (hb) => writeHeartbeatWithSync(hb, {
       writeLocal: (h) => writeHeartbeatFile(cfg.heartbeatPath, h),
       writeSynced: syncedHbPath ? () => writeSyncedHeartbeat(syncedHbPath, cfg.hostname) : () => {},

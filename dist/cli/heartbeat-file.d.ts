@@ -1,5 +1,8 @@
 import type { Heartbeat } from "../core/index";
-export declare function readHeartbeatFile(path: string): Heartbeat | null;
+export declare function readHeartbeatFile(path: string): {
+    value: Heartbeat | null;
+    warnings: string[];
+};
 export declare function writeHeartbeatFile(path: string, hb: Heartbeat): void;
 /**
  * Atomically write the synced per-host heartbeat (E2 offline-owner alert). The

@@ -147,7 +147,9 @@ function runWith(
   opts: {
     registry?: unknown | string;
     enabled?: unknown;
+    missingEnabledFile?: boolean;
     topology?: unknown | string | null;
+    missingTopologyFile?: boolean;
     heartbeat?: string; // omit → no heartbeat file written
     history?: string; // omit → historyPath: null
     historyAsDir?: boolean; // history path exists but is a directory, so it cannot be read as a file
@@ -159,10 +161,17 @@ function runWith(
   const d = mkdtempSync(join(tmpdir(), "cronbird-status-w-"));
   const reg = join(d, "registry.json");
   writeFileSync(reg, typeof opts.registry === "string" ? opts.registry : JSON.stringify(opts.registry ?? { jobs: [] }));
-  const en = join(d, "enabled.json");
-  writeFileSync(en, JSON.stringify(opts.enabled ?? []));
+  let en: string | null = null;
+  if (opts.missingEnabledFile) {
+    en = join(d, "enabled-missing.json");
+  } else if (opts.enabled !== null) {
+    en = join(d, "enabled.json");
+    writeFileSync(en, typeof opts.enabled === "string" ? opts.enabled : JSON.stringify(opts.enabled ?? []));
+  }
   let tp: string | null = null;
-  if (opts.topology !== undefined) {
+  if (opts.missingTopologyFile) {
+    tp = join(d, "topology-missing.json");
+  } else if (opts.topology !== undefined && opts.topology !== null) {
     tp = join(d, "topology.json");
     writeFileSync(tp, typeof opts.topology === "string" ? opts.topology : JSON.stringify(opts.topology));
   }
@@ -322,8 +331,32 @@ describe("corrupt sidecar warnings (present-but-unparseable → stderr, still ex
     expect(err).toMatch(/topology file present but unparseable/i);
   });
 
+  test("corrupt enabled file warns and exits 0", () => {
+    const { code, err } = runWith({ enabled: "{ not json" }, "status", []);
+    expect(code).toBe(0);
+    expect(err).toMatch(/enabled file present but unparseable/i);
+  });
+
   test("absent heartbeat (never run) does NOT warn", () => {
     const { code, err } = runWith({ /* no heartbeat file */ }, "status", []);
+    expect(code).toBe(0);
+    expect(err).not.toMatch(/unparseable/i);
+  });
+
+  test("absent enabled file does NOT warn", () => {
+    const { code, err } = runWith({ missingEnabledFile: true }, "status", []);
+    expect(code).toBe(0);
+    expect(err).not.toMatch(/unparseable/i);
+  });
+
+  test("enabledPath: null does NOT warn", () => {
+    const { code, err } = runWith({ enabled: null }, "status", []);
+    expect(code).toBe(0);
+    expect(err).not.toMatch(/unparseable/i);
+  });
+
+  test("absent topology file does NOT warn", () => {
+    const { code, err } = runWith({ missingTopologyFile: true }, "status", []);
     expect(code).toBe(0);
     expect(err).not.toMatch(/unparseable/i);
   });
