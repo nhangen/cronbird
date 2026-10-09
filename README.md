@@ -177,6 +177,8 @@ The projection is built by `computeStatus` in `cronbird/core` (pure, clock-injec
 
 `cronbird history <config.json>` queries the structured run log (requires `historyPath` configured):
 
+> **Outcomes stay `running` for now.** The daemon records every dispatch, but the dispatch wrapper that reports exit codes and durations is not wired yet ([#32](https://github.com/nhangen/cronbird/issues/32)). Until it lands, a run shows `running` unless the spawn itself failed. The `success` rows in the example below show what the wrapper will produce.
+
 ```bash
 cronbird history ./cronbird.config.json
 cronbird history ./cronbird.config.json --job morning-scan
@@ -196,12 +198,12 @@ Example:
 
 ```
 $ cronbird history ./cronbird.config.json --limit 5
-JOB           SCHEDULED            STARTED  DURATION  OUTCOME  EXIT
-morning-scan  2026-10-09T06:00:00  1m ago   12.4s     success  0
-hourly-ping   2026-10-09T06:00:00  1m ago   0.2s      success  0
-hourly-ping   2026-10-09T05:00:00  1h ago   0.2s      success  0
-nightly-sync  2026-10-09T02:00:00  4h ago   45.1s     failure  1
-hourly-ping   2026-10-09T04:00:00  2h ago   0.2s      success  0
+JOB           SCHEDULED                 STARTED  DURATION  OUTCOME  EXIT
+morning-scan  2026-10-09T06:00:00.000Z  1m ago   12.4s     success  0
+hourly-ping   2026-10-09T06:00:00.000Z  1m ago   0.2s      success  0
+hourly-ping   2026-10-09T05:00:00.000Z  1h ago   0.2s      success  0
+hourly-ping   2026-10-09T04:00:00.000Z  2h ago   0.2s      success  0
+nightly-sync  2026-10-09T02:00:00.000Z  4h ago   45.1s     failure  1
 ```
 
 ## Deploy
