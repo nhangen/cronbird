@@ -56,4 +56,15 @@ describe("parseConfig", () => {
     expect(set.historyRetentionMs).toBe(1000);
     expect(() => parseConfig(JSON.stringify({ ...base, hostname: "ml-1", maxHistoryRecords: 0 }), {})).toThrow(/positive integer or null/);
   });
+
+  test("lockPath defaults to heartbeatPath.lock when absent, respects null, and expands tilde", () => {
+    const absent = parseConfig(JSON.stringify({ ...base, hostname: "ml-1" }), {});
+    expect(absent.lockPath).toBe("/hb.json.lock");
+
+    const disabled = parseConfig(JSON.stringify({ ...base, hostname: "ml-1", lockPath: null }), {});
+    expect(disabled.lockPath).toBeNull();
+
+    const custom = parseConfig(JSON.stringify({ ...base, hostname: "ml-1", lockPath: "~/locks/cron.lock" }), { HOME: "/home/u" });
+    expect(custom.lockPath).toBe("/home/u/locks/cron.lock");
+  });
 });

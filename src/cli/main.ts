@@ -7,6 +7,7 @@ import { ShellDispatcher } from "./shell-dispatcher";
 import { readHeartbeatFile, writeHeartbeatFile, writeSyncedHeartbeat, writeHeartbeatWithSync, PermanentHeartbeatWriteError } from "./heartbeat-file";
 import { createFileRunHistorySink, rotateRunHistoryFile } from "./history-file";
 import { runStatusCommand, STATUS_SUBCOMMANDS, type StatusSubcommand } from "./status";
+import { acquireFlock } from "./flock";
 import { HELP_TOKENS, usageText } from "./usage";
 
 function nowStamp(): string { return new Date().toISOString(); }
@@ -45,11 +46,26 @@ async function main(): Promise<void> {
   const cfg = parseConfig(readFileSync(configPath, "utf8"), process.env);
   const log = (m: string) => process.stderr.write(`[${nowStamp()}] cronbird: ${m}\n`);
 
+  let lockHandle: { release(): void } | null = null;
+  if (cfg.lockPath) {
+    lockHandle = acquireFlock(cfg.lockPath, log);
+    if (!lockHandle) {
+      log(`another instance is already running (lock held at ${cfg.lockPath}); exiting`);
+      process.exit(0);
+    }
+  }
+
   let running = true;
   let wakeEarly: (() => void) | null = null;
-  const stop = (sig: string) => { log(`${sig} received, shutting down`); running = false; wakeEarly?.(); };
+  const stop = (sig: string) => {
+    log(`${sig} received, shutting down`);
+    running = false;
+    wakeEarly?.();
+    lockHandle?.release();
+  };
   process.on("SIGTERM", () => stop("SIGTERM"));
   process.on("SIGINT", () => stop("SIGINT"));
+  process.on("exit", () => lockHandle?.release());
 
   const matcher = createMatcher();
   const dispatcher = new ShellDispatcher(cfg.dispatchCommand, cfg.dispatchArgsTemplate, log);
@@ -118,6 +134,7 @@ async function main(): Promise<void> {
 
   log(`started — host=${cfg.hostname} registry=${cfg.registryPath}`);
   await runForever(deps);
+  lockHandle?.release();
   log("stopped");
 }
 

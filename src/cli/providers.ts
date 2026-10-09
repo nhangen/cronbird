@@ -21,6 +21,10 @@ export function parseJobsJson(text: string): { jobs: Job[]; warnings: string[]; 
     const o = r as Record<string, unknown>;
     if (typeof o.name !== "string" || o.name.length === 0) { warnings.push("skipped job with missing name"); continue; }
     if (typeof o.cronSchedule !== "string") { warnings.push(`skipped ${o.name}: missing cronSchedule`); continue; }
+    if (o.scope !== undefined && o.scope !== "each" && o.scope !== "single") {
+      warnings.push(`skipped ${o.name}: unknown scope "${String(o.scope)}" (expected "single" | "each")`);
+      continue;
+    }
     jobs.push({
       name: o.name,
       cronSchedule: o.cronSchedule,

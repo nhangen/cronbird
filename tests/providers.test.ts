@@ -64,4 +64,24 @@ describe("providers", () => {
     const missingPath = join(tmpdir(), `cronbird-ok-missing-${Date.now()}.json`);
     expect(fileJobProvider(missingPath)().ok).toBe(false);
   });
+
+  test("parseJobsJson warns and skips on unknown scope, defaulting unset scope to 'single' (linus L5)", () => {
+    const text = JSON.stringify({
+      jobs: [
+        { name: "good-single", cronSchedule: "0 6 * * *", scope: "single" },
+        { name: "good-each", cronSchedule: "0 6 * * *", scope: "each" },
+        { name: "default-single", cronSchedule: "0 6 * * *" },
+        { name: "typo-each", cronSchedule: "0 6 * * *", scope: "eahc" },
+        { name: "typo-single", cronSchedule: "0 6 * * *", scope: "singel" },
+      ],
+    });
+    const res = parseJobsJson(text);
+    expect(res.ok).toBe(true);
+    expect(res.jobs.map((j) => j.name)).toEqual(["good-single", "good-each", "default-single"]);
+    expect(res.jobs.find((j) => j.name === "default-single")?.scope).toBe("single");
+    expect(res.warnings).toEqual([
+      'skipped typo-each: unknown scope "eahc" (expected "single" | "each")',
+      'skipped typo-single: unknown scope "singel" (expected "single" | "each")',
+    ]);
+  });
 });

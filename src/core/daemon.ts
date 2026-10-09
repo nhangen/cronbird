@@ -238,7 +238,13 @@ export function runOneTick<T>(deps: DaemonDeps<T>, state: TickState<T>): number 
   // returns slots strictly before the current minute, so it can't already
   // overlap `due` today — but it keeps a single tick from double-dispatching a
   // job if that exclusion ever changes.
-  const due = dueAt(runnable, now, deps.matcher).filter((p) => state.guard.get(p.name) !== minute);
+  const due = dueAt(runnable, now, deps.matcher).filter((p) => {
+    const lastGuard = state.guard.get(p.name);
+    if (lastGuard !== undefined && lastGuard >= minute) return false;
+    const lastFired = state.lastFired[p.name];
+    if (lastFired !== undefined && lastFired >= minuteStart) return false;
+    return true;
+  });
   const dueNames = new Set(due.map((p) => p.name));
   const catches = catchUpFires(runnable, state.lastFired, now, deps.matcher, (s) => deps.resolveLookback(s, now)).filter(
     (f) => !dueNames.has(f.job.name),
@@ -323,7 +329,7 @@ export function runOneTick<T>(deps: DaemonDeps<T>, state: TickState<T>): number 
       // stays at the cap forever and gets only a single attempt per later slot,
       // and a since-recovered upstream keeps cascade-cancelling its dependents.
       state.attempts[p.name] = 0;
-      nextLastFired[p.name] = minuteStart;
+      nextLastFired[p.name] = Math.max(state.lastFired[p.name] ?? 0, minuteStart);
       state.slotTsByName[p.name] = minuteStart;
       state.recent.push({ name: p.name, ts: now.getTime() });
     }
@@ -345,7 +351,11 @@ export function runOneTick<T>(deps: DaemonDeps<T>, state: TickState<T>): number 
 
   // Drop guard entries older than the previous minute — only the current
   // minute (and a same-minute restart) can produce a double-fire.
-  for (const [name, mn] of state.guard) if (mn < minute - 1) state.guard.delete(name);
+  // Upper bound (+1440): a massive clock warp (>24h forward then back) is also pruned
+  // so a transient clock anomaly does not wedge the guard forever.
+  for (const [name, mn] of state.guard) {
+    if (mn < minute - 1 || mn > minute + 1440) state.guard.delete(name);
+  }
 
   // Cascade: derive the failed set from persisted state, then drop any queued
   // job whose (transitive) upstream has finally failed. Pure function of state,

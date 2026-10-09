@@ -25,12 +25,13 @@ All fields are required unless marked optional.
 
 | Field | Type | Description |
 |---|---|---|
-| `hostname` | `string` | Host identifier. Use `"auto"` to resolve to the short OS hostname (`os.hostname().split(".")[0]`). |
+| `hostname` | `string` | Host identifier. Use `"auto"` to resolve to the short OS hostname (`os.hostname().split(".")[0]`). **Ownership note**: Renaming a host changes `os.hostname()`, silently de-owning single-scope jobs keyed to the old ID in topology `owners`. Pin `hostname` explicitly on owner hosts. |
 | `registryPath` | `string` | Path to the job registry JSON file. Required. |
 | `enabledPath` | `string \| null` | Path to a JSON array of enabled job names — the gate for `each`-scope jobs on this host. `null` yields an **empty** enabled set, so **no `each`-scope job runs** (it does *not* mean "all enabled"). `single`-scope jobs ignore this; they are gated by topology `owners`. |
 | `topologyPath` | `string \| null` | Path to a topology JSON file (`{ hosts, owners }`). `null` = no topology (single-host mode). |
 | `heartbeatPath` | `string` | Path for the local heartbeat file (double-fire guard + catch-up state). |
 | `syncedHeartbeatDir` | `string \| null` | Directory for a synced per-host heartbeat copy (E2 offline-owner alert). `null` = no synced copy. |
+| `lockPath` | `string \| null` (optional) | Path for the single-instance flock file. Defaults to `<heartbeatPath>.lock`. Set to `null` to disable flock. |
 | `historyPath` | `string \| null` (optional) | Path to append-only run-history JSONL file. `null` or omitted = disable run history. |
 | `maxHistoryRecords` | `number` (optional) | Maximum records retained during history rotation. Default: `1000`. |
 | `historyRetentionMs` | `number` (optional) | Maximum age of retained history records (ms). Default: `604800000` (7 days). |
@@ -126,6 +127,10 @@ When you have multiple hosts and want only one to dispatch a `scope: "single"` j
 ```
 
 Set `topologyPath` in your config to point at this file.
+
+> [!WARNING]
+> **Pin `hostname` explicitly on owner hosts (avoid `"auto"`).**
+> Setting `"hostname": "auto"` resolves to `os.hostname().split(".")[0]`. If an owner machine is renamed, DHCP alters its hostname, or a cloud instance boots with a new default name, `os.hostname()` changes. Any `scope: "single"` jobs mapped to the old hostname in `owners` will be silently de-owned and run nowhere. Pin `hostname` explicitly on owner hosts to match the exact identifier in `owners` (e.g. `"hostname": "host-a"`).
 
 For `scope: "each"` jobs, `owners` is irrelevant: each host dispatches the job independently **iff the job is in that host's enabled set** (`enabledPath` → a JSON array of job names). The `hosts` field does **not** gate this — enablement is per-host. Note `enabledPath: null` yields an *empty* enabled set, so no `each`-scope job runs until you populate it.
 

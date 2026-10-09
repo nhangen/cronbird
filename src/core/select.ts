@@ -23,7 +23,9 @@ export function selectRunnable<T>(
 ): Job<T>[] {
   return jobs.filter((p) => {
     if (!p.isActive || p.cronSchedule.trim() === "") return false;
-    return p.scope === "single" ? owners[p.name] === host : enabled.has(p.name);
+    if (p.scope === "single") return owners[p.name] === host;
+    if (p.scope === "each") return enabled.has(p.name);
+    return false;
   });
 }
 
