@@ -6,16 +6,16 @@ import type { Job, Topology } from "../core/index";
 // legitimately-empty one and one with per-job skips. The daemon loop keys its
 // reuse-last-good decision on `ok === false`; string-matching warnings would be
 // fragile and can't tell a corrupt registry from one whose rows all skipped.
-export function parseJobsJson(text: string): { jobs: Job[]; warnings: string[]; ok: boolean } {
+export function parseJobsJson(text: string): { jobs: Job[]; value: Job[]; warnings: string[]; ok: boolean } {
   const warnings: string[] = [];
   let parsed: unknown;
   try {
     parsed = JSON.parse(text);
   } catch {
-    return { jobs: [], warnings: ["registry is not valid JSON"], ok: false };
+    return { jobs: [], value: [], warnings: ["registry is not valid JSON"], ok: false };
   }
   const rows = (parsed as { jobs?: unknown }).jobs;
-  if (!Array.isArray(rows)) return { jobs: [], warnings: ["registry.jobs is not an array"], ok: false };
+  if (!Array.isArray(rows)) return { jobs: [], value: [], warnings: ["registry.jobs is not an array"], ok: false };
   const jobs: Job[] = [];
   for (const r of rows) {
     const o = r as Record<string, unknown>;
@@ -34,44 +34,80 @@ export function parseJobsJson(text: string): { jobs: Job[]; warnings: string[]; 
       metadata: (o.metadata ?? {}) as unknown,
     });
   }
-  return { jobs, warnings, ok: true };
+  return { jobs, value: jobs, warnings, ok: true };
 }
 
-export function parseEnabledJson(text: string): Set<string> {
+export function parseEnabledJson(text: string | null, path?: string): { value: Set<string>; warnings: string[] } {
+  if (text === null) return { value: new Set(), warnings: [] };
   try {
     const a = JSON.parse(text);
-    if (Array.isArray(a)) return new Set(a.filter((x) => typeof x === "string"));
+    if (Array.isArray(a)) return { value: new Set(a.filter((x) => typeof x === "string")), warnings: [] };
   } catch { /* fall through */ }
-  return new Set();
+  const warn = path
+    ? `enabled file present but unparseable: ${path}`
+    : "enabled file present but unparseable";
+  return { value: new Set(), warnings: [warn] };
 }
 
-export function parseTopologyJson(text: string): Topology | null {
+export function parseTopologyJson(text: string | null, path?: string): { value: Topology | null; warnings: string[] } {
+  if (text === null) return { value: null, warnings: [] };
   try {
     const o = JSON.parse(text) as Record<string, unknown>;
     const hosts = o.hosts, owners = o.owners;
-    if (!Array.isArray(hosts) || typeof owners !== "object" || owners === null) return null;
-    const cleanOwners: Record<string, string> = {};
-    for (const [k, v] of Object.entries(owners)) if (typeof v === "string") cleanOwners[k] = v;
-    return { hosts: hosts.filter((h) => typeof h === "string") as string[], owners: cleanOwners };
-  } catch {
-    return null;
+    if (Array.isArray(hosts) && typeof owners === "object" && owners !== null) {
+      const cleanOwners: Record<string, string> = {};
+      for (const [k, v] of Object.entries(owners)) if (typeof v === "string") cleanOwners[k] = v;
+      return {
+        value: { hosts: hosts.filter((h) => typeof h === "string") as string[], owners: cleanOwners },
+        warnings: [],
+      };
+    }
+  } catch { /* fall through */ }
+  const warn = path
+    ? `topology file present but unparseable: ${path}`
+    : "topology file present but unparseable";
+  return { value: null, warnings: [warn] };
+}
+
+type Sidecar = { kind: "ok"; text: string } | { kind: "absent" } | { kind: "unreadable"; code: string };
+
+// ENOENT between existsSync and the read is a vanished file — absent, not corrupt.
+// Anything else (EISDIR, EACCES, EIO) is present-but-unreadable and keeps its errno.
+function readSidecar(path: string): Sidecar {
+  try {
+    return { kind: "ok", text: readFileSync(path, "utf8") };
+  } catch (e) {
+    const code = (e as NodeJS.ErrnoException).code ?? "unknown";
+    return code === "ENOENT" ? { kind: "absent" } : { kind: "unreadable", code };
   }
 }
 
-function readIfExists(path: string): string {
-  return existsSync(path) ? readFileSync(path, "utf8") : "";
-}
-
-export function fileJobProvider(path: string): () => { jobs: Job[]; warnings: string[]; ok: boolean } {
+export function fileJobProvider(path: string): () => { jobs: Job[]; value: Job[]; warnings: string[]; ok: boolean } {
   return () => {
-    const text = readIfExists(path);
-    if (text === "") return { jobs: [], warnings: [`registry file not found: ${path}`], ok: false };
-    return parseJobsJson(text);
+    if (!existsSync(path)) return { jobs: [], value: [], warnings: [`registry file not found: ${path}`], ok: false };
+    const r = readSidecar(path);
+    if (r.kind === "ok") return parseJobsJson(r.text);
+    const warning = r.kind === "absent" ? `registry file not found: ${path}` : `registry file unreadable: ${path} (${r.code})`;
+    return { jobs: [], value: [], warnings: [warning], ok: false };
   };
 }
-export function fileEnabledProvider(path: string | null): () => Set<string> {
-  return () => (path ? parseEnabledJson(readIfExists(path)) : new Set());
+
+export function fileEnabledProvider(path: string | null): () => { value: Set<string>; warnings: string[] } {
+  return () => {
+    if (!path || !existsSync(path)) return { value: new Set(), warnings: [] };
+    const r = readSidecar(path);
+    if (r.kind === "ok") return parseEnabledJson(r.text, path);
+    if (r.kind === "absent") return { value: new Set(), warnings: [] };
+    return { value: new Set(), warnings: [`enabled file present but unreadable: ${path} (${r.code})`] };
+  };
 }
-export function fileTopologyProvider(path: string | null): () => Topology | null {
-  return () => (path ? parseTopologyJson(readIfExists(path)) : null);
+
+export function fileTopologyProvider(path: string | null): () => { value: Topology | null; warnings: string[] } {
+  return () => {
+    if (!path || !existsSync(path)) return { value: null, warnings: [] };
+    const r = readSidecar(path);
+    if (r.kind === "ok") return parseTopologyJson(r.text, path);
+    if (r.kind === "absent") return { value: null, warnings: [] };
+    return { value: null, warnings: [`topology file present but unreadable: ${path} (${r.code})`] };
+  };
 }

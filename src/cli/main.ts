@@ -9,6 +9,7 @@ import { createFileRunHistorySink, rotateRunHistoryFile } from "./history-file";
 import { runStatusCommand, STATUS_SUBCOMMANDS, type StatusSubcommand } from "./status";
 import { acquireFlock } from "./flock";
 import { HELP_TOKENS, usageText } from "./usage";
+import { createSurfacer } from "./warn-dedup";
 
 function nowStamp(): string { return new Date().toISOString(); }
 
@@ -71,6 +72,8 @@ async function main(): Promise<void> {
   const dispatcher = new ShellDispatcher(cfg.dispatchCommand, cfg.dispatchArgsTemplate, log);
   const syncedHbPath = cfg.syncedHeartbeatDir ? `${cfg.syncedHeartbeatDir}/${cfg.hostname}.json` : null;
 
+  const surface = createSurfacer(log);
+
   const deps: DaemonDeps = {
     now: () => new Date(),
     sleep: (ms) => new Promise<void>((resolve) => {
@@ -78,10 +81,10 @@ async function main(): Promise<void> {
       wakeEarly = () => { clearTimeout(t); wakeEarly = null; resolve(); };
     }),
     loadRegistry: fileJobProvider(cfg.registryPath),
-    loadEnabled: fileEnabledProvider(cfg.enabledPath),
-    loadTopology: fileTopologyProvider(cfg.topologyPath),
+    loadEnabled: () => surface("enabled", fileEnabledProvider(cfg.enabledPath)()),
+    loadTopology: () => surface("topology", fileTopologyProvider(cfg.topologyPath)()),
     dispatch: (name) => dispatcher.dispatch(name),
-    readHeartbeat: () => readHeartbeatFile(cfg.heartbeatPath),
+    readHeartbeat: () => surface("heartbeat", readHeartbeatFile(cfg.heartbeatPath)),
     writeHeartbeat: (hb) => writeHeartbeatWithSync(hb, {
       writeLocal: (h) => writeHeartbeatFile(cfg.heartbeatPath, h),
       writeSynced: syncedHbPath ? () => writeSyncedHeartbeat(syncedHbPath, cfg.hostname) : () => {},

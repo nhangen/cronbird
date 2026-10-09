@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { parseJobsJson, parseEnabledJson, parseTopologyJson, fileJobProvider, fileEnabledProvider } from "../src/cli/providers";
+import { parseJobsJson, parseEnabledJson, parseTopologyJson, fileJobProvider, fileEnabledProvider, fileTopologyProvider } from "../src/cli/providers";
 
 describe("providers", () => {
   test("parseJobsJson maps registry entries to Job and collects warnings for bad rows", () => {
@@ -12,21 +12,81 @@ describe("providers", () => {
     ]});
     const r = parseJobsJson(text);
     expect(r.jobs.map((j) => j.name)).toEqual(["a"]);
+    expect(r.value.map((j) => j.name)).toEqual(["a"]);
     expect(r.warnings.length).toBe(1);
   });
 
-  test("parseEnabledJson returns empty set on malformed input (fail-safe)", () => {
-    expect(parseEnabledJson("not json").size).toBe(0);
-    expect([...parseEnabledJson(JSON.stringify(["x", "y"]))].sort()).toEqual(["x", "y"]);
+  test("parseEnabledJson returns empty set on malformed input (fail-safe) with warning", () => {
+    const bad = parseEnabledJson("not json");
+    expect(bad.value.size).toBe(0);
+    expect(bad.warnings).toEqual(["enabled file present but unparseable"]);
+
+    const badWithPath = parseEnabledJson("not json", "/path/to/enabled.json");
+    expect(badWithPath.value.size).toBe(0);
+    expect(badWithPath.warnings).toEqual(["enabled file present but unparseable: /path/to/enabled.json"]);
+
+    const good = parseEnabledJson(JSON.stringify(["x", "y"]));
+    expect([...good.value].sort()).toEqual(["x", "y"]);
+    expect(good.warnings).toEqual([]);
+
+    const absent = parseEnabledJson(null);
+    expect(absent.value.size).toBe(0);
+    expect(absent.warnings).toEqual([]);
   });
 
-  test("parseTopologyJson returns null on malformed input (reuse last-good)", () => {
-    expect(parseTopologyJson("not json")).toBeNull();
-    expect(parseTopologyJson(JSON.stringify({ hosts: ["h"], owners: { j: "h" } }))?.owners.j).toBe("h");
+  test("parseTopologyJson returns null on malformed input (reuse last-good) with warning", () => {
+    const bad = parseTopologyJson("not json");
+    expect(bad.value).toBeNull();
+    expect(bad.warnings).toEqual(["topology file present but unparseable"]);
+
+    const badWithPath = parseTopologyJson("not json", "/path/to/topology.json");
+    expect(badWithPath.value).toBeNull();
+    expect(badWithPath.warnings).toEqual(["topology file present but unparseable: /path/to/topology.json"]);
+
+    const good = parseTopologyJson(JSON.stringify({ hosts: ["h"], owners: { j: "h" } }));
+    expect(good.value?.owners.j).toBe("h");
+    expect(good.warnings).toEqual([]);
+
+    const absent = parseTopologyJson(null);
+    expect(absent.value).toBeNull();
+    expect(absent.warnings).toEqual([]);
   });
 
   test("fileEnabledProvider(null) yields an EMPTY set — enabledPath:null is not 'all enabled', so no each-scope job runs (#10)", () => {
-    expect(fileEnabledProvider(null)().size).toBe(0);
+    const res = fileEnabledProvider(null)();
+    expect(res.value.size).toBe(0);
+    expect(res.warnings).toEqual([]);
+  });
+
+  test("fileEnabledProvider handles missing file as benign empty set without warnings", () => {
+    const missing = join(tmpdir(), `cronbird-missing-enabled-${Date.now()}.json`);
+    const res = fileEnabledProvider(missing)();
+    expect(res.value.size).toBe(0);
+    expect(res.warnings).toEqual([]);
+  });
+
+  test("fileEnabledProvider warns on corrupt enabled file", () => {
+    const p = join(tmpdir(), `cronbird-corrupt-enabled-${Date.now()}.json`);
+    writeFileSync(p, "{ not json");
+    const res = fileEnabledProvider(p)();
+    rmSync(p, { force: true });
+    expect(res.value.size).toBe(0);
+    expect(res.warnings).toEqual([`enabled file present but unparseable: ${p}`]);
+  });
+
+  test("fileTopologyProvider(null) and missing file return null without warnings", () => {
+    expect(fileTopologyProvider(null)()).toEqual({ value: null, warnings: [] });
+    const missing = join(tmpdir(), `cronbird-missing-topology-${Date.now()}.json`);
+    expect(fileTopologyProvider(missing)()).toEqual({ value: null, warnings: [] });
+  });
+
+  test("fileTopologyProvider warns on corrupt topology file", () => {
+    const p = join(tmpdir(), `cronbird-corrupt-topology-${Date.now()}.json`);
+    writeFileSync(p, "{ not json");
+    const res = fileTopologyProvider(p)();
+    rmSync(p, { force: true });
+    expect(res.value).toBeNull();
+    expect(res.warnings).toEqual([`topology file present but unparseable: ${p}`]);
   });
 
   test("fileJobProvider fails safe on missing registry file — returns empty jobs + warning", () => {
@@ -83,5 +143,41 @@ describe("providers", () => {
       'skipped typo-each: unknown scope "eahc" (expected "single" | "each")',
       'skipped typo-single: unknown scope "singel" (expected "single" | "each")',
     ]);
+  });
+});
+
+describe("providers: unreadable sidecars (read error is not a parse error)", () => {
+  const asDir = (): string => mkdtempSync(join(tmpdir(), "cronbird-asdir-"));
+
+  test("fileEnabledProvider on a directory warns 'unreadable' with the errno, not 'unparseable'", () => {
+    const d = asDir();
+    try {
+      const res = fileEnabledProvider(d)();
+      expect(res.value.size).toBe(0);
+      expect(res.warnings).toEqual([`enabled file present but unreadable: ${d} (EISDIR)`]);
+    } finally { rmSync(d, { recursive: true, force: true }); }
+  });
+
+  test("fileTopologyProvider on a directory warns 'unreadable' with the errno", () => {
+    const d = asDir();
+    try {
+      const res = fileTopologyProvider(d)();
+      expect(res.value).toBeNull();
+      expect(res.warnings).toEqual([`topology file present but unreadable: ${d} (EISDIR)`]);
+    } finally { rmSync(d, { recursive: true, force: true }); }
+  });
+
+  test("fileJobProvider on a directory is ok:false and says unreadable, not 'not found'", () => {
+    const d = asDir();
+    try {
+      const res = fileJobProvider(d)();
+      expect(res.ok).toBe(false);
+      expect(res.warnings).toEqual([`registry file unreadable: ${d} (EISDIR)`]);
+    } finally { rmSync(d, { recursive: true, force: true }); }
+  });
+
+  test("valid JSON of the wrong shape still warns unparseable (enabled not an array, topology missing owners)", () => {
+    expect(parseEnabledJson("{}", "/p").warnings).toEqual(["enabled file present but unparseable: /p"]);
+    expect(parseTopologyJson(JSON.stringify({ hosts: [] }), "/p").warnings).toEqual(["topology file present but unparseable: /p"]);
   });
 });

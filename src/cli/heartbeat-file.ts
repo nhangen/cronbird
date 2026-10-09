@@ -2,25 +2,39 @@
  * Durable persistence for the daemon heartbeat. The heartbeat doubles as the
  * double-fire guard's backing store (H1): on startup the daemon restores
  * `dispatched_minute` from here, so a `Restart=always` crash inside a fire-minute
- * does not re-run a playbook. A corrupt or missing file reads as `null` — the
- * guard starts empty rather than crashing the daemon at boot.
+ * does not re-run a playbook. A missing file reads as `{ value: null }` with no
+ * warning; a present-but-unreadable or corrupt one also reads as `null` but adds a
+ * warning so callers can tell the two apart. Either way the guard starts empty
+ * rather than crashing the daemon at boot.
  */
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import type { CompletionRecord, DispatchRecord, Heartbeat, QueueEntry, RunningSlotInfo } from "../core/index";
 
-export function readHeartbeatFile(path: string): Heartbeat | null {
-  if (!existsSync(path)) return null;
+export function readHeartbeatFile(path: string): { value: Heartbeat | null; warnings: string[] } {
+  if (!existsSync(path)) return { value: null, warnings: [] };
+  const warn = (): { value: Heartbeat | null; warnings: string[] } => ({
+    value: null,
+    warnings: [`heartbeat file present but unparseable: ${path}`],
+  });
+  let text: string;
+  try {
+    text = readFileSync(path, "utf8");
+  } catch (e) {
+    const code = (e as NodeJS.ErrnoException).code ?? "unknown";
+    if (code === "ENOENT") return { value: null, warnings: [] };
+    return { value: null, warnings: [`heartbeat file present but unreadable: ${path} (${code})`] };
+  }
   let raw: unknown;
   try {
-    raw = JSON.parse(readFileSync(path, "utf8"));
+    raw = JSON.parse(text);
   } catch {
-    return null;
+    return warn();
   }
-  if (typeof raw !== "object" || raw === null) return null;
+  if (typeof raw !== "object" || raw === null) return warn();
   const r = raw as Record<string, unknown>;
-  if (typeof r.ts !== "number") return null;
-  if (typeof r.dispatched_minute !== "object" || r.dispatched_minute === null) return null;
+  if (typeof r.ts !== "number") return warn();
+  if (typeof r.dispatched_minute !== "object" || r.dispatched_minute === null) return warn();
   const lastDispatch = Array.isArray(r.last_dispatch) ? (r.last_dispatch as DispatchRecord[]) : [];
   // Drop any non-numeric guard value: a string slipping in would never `===`
   // the current epoch-minute, silently disabling the double-fire guard for that
@@ -30,23 +44,26 @@ export function readHeartbeatFile(path: string): Heartbeat | null {
   // heartbeats) reads as empty so the daemon simply re-baselines.
   const lastFired = numericMap(r.last_fired);
   return {
-    ts: r.ts,
-    host: typeof r.host === "string" ? r.host : "",
-    runnable_count: typeof r.runnable_count === "number" ? r.runnable_count : 0,
-    next_wake_ts: typeof r.next_wake_ts === "number" ? r.next_wake_ts : 0,
-    last_dispatch: lastDispatch,
-    dispatched_minute: dispatchedMinute,
-    last_fired: lastFired,
-    // Scheduler backlog + retry state. Absent (pre-priority-chain heartbeats) or
-    // malformed reads as empty so the daemon simply starts with a clean queue —
-    // never crashes at boot, never fabricates entries.
-    queue: queueEntries(r.queue),
-    running: numericMap(r.running),
-    ...(r.running_slots !== undefined ? { running_slots: runningSlotsMap(r.running_slots) } : {}),
-    last_completed: completionMap(r.last_completed),
-    attempts: numericMap(r.attempts),
-    last_run: numericMap(r.last_run),
-    last_success: numericMap(r.last_success),
+    value: {
+      ts: r.ts,
+      host: typeof r.host === "string" ? r.host : "",
+      runnable_count: typeof r.runnable_count === "number" ? r.runnable_count : 0,
+      next_wake_ts: typeof r.next_wake_ts === "number" ? r.next_wake_ts : 0,
+      last_dispatch: lastDispatch,
+      dispatched_minute: dispatchedMinute,
+      last_fired: lastFired,
+      // Scheduler backlog + retry state. Absent (pre-priority-chain heartbeats) or
+      // malformed reads as empty so the daemon simply starts with a clean queue —
+      // never crashes at boot, never fabricates entries.
+      queue: queueEntries(r.queue),
+      running: numericMap(r.running),
+      ...(r.running_slots !== undefined ? { running_slots: runningSlotsMap(r.running_slots) } : {}),
+      last_completed: completionMap(r.last_completed),
+      attempts: numericMap(r.attempts),
+      last_run: numericMap(r.last_run),
+      last_success: numericMap(r.last_success),
+    },
+    warnings: [],
   };
 }
 
