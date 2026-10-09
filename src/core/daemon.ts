@@ -233,6 +233,16 @@ export function runOneTick<T>(deps: DaemonDeps<T>, state: TickState<T>): number 
   const minuteStart = minute * MINUTE_MS;
   const jobByName = new Map(runnable.map((j) => [j.name, j]));
 
+  // Guard against extreme forward clock warps (>24h): if lastFired is far in the future,
+  // clamp it to now so a transient clock jump does not permanently suppress future runs.
+  const maxFutureFired = now.getTime() + 1440 * MINUTE_MS;
+  for (const [name, ts] of Object.entries(state.lastFired)) {
+    if (ts > maxFutureFired) {
+      deps.log(`clock warp: clamping future last_fired for ${name} (${ts} > ${maxFutureFired})`);
+      state.lastFired[name] = now.getTime();
+    }
+  }
+
   // Current-minute fires (live path), then catch-up fires for slots missed
   // while the daemon was down. The dueNames filter is defensive: catch-up only
   // returns slots strictly before the current minute, so it can't already

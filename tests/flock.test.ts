@@ -94,4 +94,65 @@ describe("acquireFlock", () => {
       rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  test("release() is idempotent and does not throw on multiple invocations", () => {
+    const dir = mkdtempSync(join(tmpdir(), "cronbird-flock-idempotent-"));
+    const lockPath = join(dir, "cronbird.lock");
+    try {
+      const lock = acquireFlock(lockPath);
+      expect(lock).not.toBeNull();
+      expect(() => {
+        lock?.release();
+        lock?.release();
+        lock?.release();
+      }).not.toThrow();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("fails open if directory creation or file open fails", () => {
+    const logs: string[] = [];
+    const handle = acquireFlock("/dev/null/cannot_create_dir/test.lock", (msg) => logs.push(msg));
+    expect(handle).not.toBeNull();
+    expect(logs.length).toBeGreaterThan(0);
+    expect(logs[0]).toContain("flock: failed to open");
+  });
+
+  test("CLI daemon runs normally when lockPath is explicitly null", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "cronbird-cli-null-lock-"));
+    const reg = join(dir, "r.json");
+    writeFileSync(reg, JSON.stringify({ jobs: [] }));
+    const cfg = join(dir, "c.json");
+    writeFileSync(
+      cfg,
+      JSON.stringify({
+        hostname: "ml-1",
+        registryPath: reg,
+        enabledPath: null,
+        topologyPath: null,
+        heartbeatPath: join(dir, "hb.json"),
+        lockPath: null,
+        syncedHeartbeatDir: null,
+        dispatchCommand: ["./run.sh"],
+        dispatchArgsTemplate: ["{job}"],
+        maxSleepMs: 60_000,
+        catchupLookbackFloorMs: 3_600_000,
+        catchupLookbackCapMs: 21_600_000,
+      }),
+    );
+
+    try {
+      const proc = Bun.spawn(["bun", MAIN, cfg], { stdout: "pipe", stderr: "pipe" });
+      await Bun.sleep(100);
+      proc.kill(15);
+      const exitCode = await proc.exited;
+      expect(exitCode).toBe(0);
+      const stderr = await new Response(proc.stderr).text();
+      expect(stderr).toContain("started — host=ml-1");
+      expect(stderr).not.toContain("another instance is already running");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });
