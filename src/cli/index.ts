@@ -14,4 +14,6 @@ export {
 export { runStatusCommand, STATUS_SUBCOMMANDS } from "./status";
 export type { StatusSubcommand, StatusCliDeps } from "./status";
 export { usageText, HELP_TOKENS } from "./usage";
+export { acquireFlock } from "./flock";
+export type { FlockHandle } from "./flock";
 export type { RunRecord, RunOutcome } from "../core/index";

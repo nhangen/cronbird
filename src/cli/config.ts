@@ -9,6 +9,7 @@ export interface CronbirdConfig {
   topologyPath: string | null;
   heartbeatPath: string;
   syncedHeartbeatDir: string | null;
+  lockPath: string | null;
   historyPath: string | null;
   maxHistoryRecords: number | null;
   historyRetentionMs: number | null;
@@ -85,13 +86,20 @@ export function parseConfig(raw: string, env: Record<string, string | undefined>
   const home = env.HOME;
   const rawHost = reqString(o, "hostname");
   const hostname = rawHost === "auto" ? (osHostname().split(".")[0] ?? "unknown") : rawHost;
+  const heartbeatPath = expandTilde(reqString(o, "heartbeatPath"), home);
   return {
     hostname,
     registryPath: expandTilde(reqString(o, "registryPath"), home),
     enabledPath: (() => { const ep = optString(o, "enabledPath"); return ep ? expandTilde(ep, home) : null; })(),
     topologyPath: (() => { const tp = optString(o, "topologyPath"); return tp ? expandTilde(tp, home) : null; })(),
-    heartbeatPath: expandTilde(reqString(o, "heartbeatPath"), home),
+    heartbeatPath,
     syncedHeartbeatDir: (() => { const sd = optString(o, "syncedHeartbeatDir"); return sd ? expandTilde(sd, home) : null; })(),
+    lockPath: (() => {
+      if (o.lockPath === null) return null;
+      if (o.lockPath === undefined) return `${heartbeatPath}.lock`;
+      const lp = optString(o, "lockPath");
+      return lp ? expandTilde(lp, home) : null;
+    })(),
     historyPath: (() => { const hp = optString(o, "historyPath"); return hp ? expandTilde(hp, home) : null; })(),
     maxHistoryRecords: optPosInt(o, "maxHistoryRecords"),
     historyRetentionMs: optPosInt(o, "historyRetentionMs"),

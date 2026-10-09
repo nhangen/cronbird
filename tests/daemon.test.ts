@@ -269,6 +269,41 @@ describe("double-fire guard", () => {
     expect(h.heartbeats[0]!.dispatched_minute.ev).toBe(minute);
     expect(h.heartbeats[0]!.last_dispatch.map((x) => x.name)).toEqual(["ev"]);
   });
+
+  test("NTP backward step of 1 minute does not re-dispatch already-fired slot", async () => {
+    // 09:01 fires; clock steps back to 09:00:30; then to 09:01:10; then 09:02
+    const h = harness({
+      nows: [
+        d("2026-06-01T09:01:05Z"),
+        d("2026-06-01T09:00:30Z"), // backward step
+        d("2026-06-01T09:01:20Z"), // reclaimed minute
+        d("2026-06-01T09:02:05Z"), // next fresh minute
+      ],
+      playbooks: [pb({ name: "ev", cronSchedule: "* * * * *" })],
+    });
+    await runForever(h.deps);
+    // Fires once for 09:01 and once for 09:02. Zero duplicate fires for 09:00/09:01.
+    expect(h.dispatched).toEqual(["ev", "ev"]);
+  });
+
+  test("NTP backward step >1 min does not re-fire even when guard was pruned (gilfoyle G3)", async () => {
+    // Minute 103: ev fires.
+    // Minute 105: prune drops 103 from state.guard because 103 < 105 - 1 = 104.
+    // Backward step: clock jumps from 105 back to 103 (where state.guard has no 103 entry).
+    // lastFired >= minuteStart prevents re-firing.
+    const h = harness({
+      nows: [
+        d("2026-06-01T09:03:05Z"), // minute 103: fires
+        d("2026-06-01T09:05:05Z"), // minute 105: fires, prunes 103 from guard
+        d("2026-06-01T09:03:30Z"), // clock steps back to 103: MUST NOT re-fire
+        d("2026-06-01T09:06:05Z"), // minute 106: fresh slot fires
+      ],
+      playbooks: [pb({ name: "ev", cronSchedule: "* * * * *" })],
+    });
+    await runForever(h.deps);
+    // 09:03, 09:05, 09:06 (3 fires total). Zero re-fires on the stepped-back 09:03!
+    expect(h.dispatched).toEqual(["ev", "ev", "ev"]);
+  });
 });
 
 describe("registry resilience", () => {

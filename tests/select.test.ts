@@ -57,6 +57,10 @@ describe("selectRunnable — scope gating", () => {
     ];
     expect(selectRunnable(pbs, "ml-1", new Set(["draft","blank","ok"]), {}).map((p) => p.name)).toEqual(["ok"]);
   });
+  test("unknown scope value is excluded by selectRunnable (defense in depth)", () => {
+    const pbs = [pb({ name: "unknown-scope", scope: "bogus" as unknown as "single" })];
+    expect(selectRunnable(pbs, "ml-1", new Set(["unknown-scope"]), { "unknown-scope": "ml-1" })).toEqual([]);
+  });
 
   test("Job.hosts is NOT a runtime gate — a job whose hosts excludes this host still runs when enabled/owned (#12)", () => {
     // each-scope enabled here, hosts names only another host → still runs (enabled set gates, not hosts).
