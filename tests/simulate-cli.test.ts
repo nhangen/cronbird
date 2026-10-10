@@ -455,6 +455,7 @@ describe("simulate CLI — end-to-end binary execution", () => {
     );
     expect(r.exitCode).toBe(0);
     expect(r.stdout.toString()).toContain("hourly");
+    expect(r.stderr.toString()).toContain("window: 2026-07-01T12:00:00.000Z → 2026-07-01T13:00:00.000Z");
   });
 
   test("piped output larger than a pipe buffer arrives complete", () => {
