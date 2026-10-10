@@ -423,7 +423,7 @@ function renderExplain(report: import("../core/index").ExplainReport, parsed: Pa
   // Human-readable rendering: the headline verdict, the gate table, and the
   // fire times. The gate table is the core of #16 — it makes the opaque
   // "why didn't my job run" question one command.
-  const verdict = report.runnable ? "RUNNABLE" : "NOT RUNNABLE";
+  const verdict = !report.runnable ? "NOT RUNNABLE" : report.scheduleValid ? "RUNNABLE" : "RUNNABLE (schedule invalid — never fires)";
   deps.out(`job=${report.name}  host=${report.host}  ${verdict}\n\n`);
   deps.out(`schedule:       ${report.schedule}\n`);
   deps.out(`scope:          ${report.scope}\n`);

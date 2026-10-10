@@ -76,7 +76,7 @@ describe("explainJob — runnable each-job", () => {
     expect(r.nextFires[1]).toBe(new Date("2026-07-01T14:00:00.000Z").getTime());
     // All gates passed
     expect(r.gates.every((g) => g.passed)).toBe(true);
-    expect(r.gates.map((g) => g.gate)).toEqual(["active", "scope", "enabled-membership", "owner-match"]);
+    expect(r.gates.map((g) => g.gate)).toEqual(["active", "schedule", "scope", "enabled-membership", "owner-match"]);
     // The owner-match gate is "not applicable" for each-scope (passed: true)
     const ownerGate = r.gates.find((g) => g.gate === "owner-match")!;
     expect(ownerGate.passed).toBe(true);
@@ -205,9 +205,12 @@ describe("explainJob — schedule validity", () => {
     expect(r.nextFires).toEqual([]);
   });
 
-  test("blank schedule → not runnable (selectRunnable treats blank as not runnable)", () => {
-    const r = explain(job({ name: "blank", cronSchedule: "" }), { enabled: new Set(["blank"]) });
+  test("blank schedule → not runnable, schedule gate is the failing gate", () => {
+    const r = explain(job({ name: "blank", cronSchedule: "  " }), { enabled: new Set(["blank"]) });
     expect(r.runnable).toBe(false);
+    const failing = r.gates.filter((g) => !g.passed);
+    expect(failing.map((g) => g.gate)).toEqual(["schedule"]);
+    expect(failing[0]!.reason).toContain("blank");
   });
 });
 
@@ -235,4 +238,25 @@ describe("explainJob — never-fires-again schedule", () => {
     expect(r.scheduleValid).toBe(true);
     expect(r.nextFires).toEqual([]);
   });
+});
+
+describe("explainJob — gates account for the verdict", () => {
+  const cases: Array<[string, Partial<Job>, Partial<BaseArgs>, boolean]> = [
+    ["active each enabled", {}, { enabled: new Set(["j"]) }, true],
+    ["active each not enabled", {}, {}, false],
+    ["inactive each enabled", { isActive: false }, { enabled: new Set(["j"]) }, false],
+    ["blank each enabled", { cronSchedule: "" }, { enabled: new Set(["j"]) }, false],
+    ["active single owned", { scope: "single" }, { owners: { j: "ml-1" } }, true],
+    ["active single foreign", { scope: "single" }, { owners: { j: "other" } }, false],
+    ["active single unowned", { scope: "single" }, {}, false],
+    ["inactive single owned", { scope: "single", isActive: false }, { owners: { j: "ml-1" } }, false],
+    ["blank single owned", { scope: "single", cronSchedule: "" }, { owners: { j: "ml-1" } }, false],
+  ];
+  for (const [label, jobOverrides, args, expected] of cases) {
+    test(`${label} → runnable=${expected}, and runnable iff every gate passed`, () => {
+      const r = explain(job(jobOverrides), args);
+      expect(r.runnable).toBe(expected);
+      expect(r.gates.every((g) => g.passed)).toBe(expected);
+    });
+  }
 });

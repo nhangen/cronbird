@@ -13,12 +13,13 @@
  * validity? — plus the next N fires and the last recorded fire.
  */
 import type { CronMatcher } from "./cron";
+import { selectRunnable } from "./select";
 import type { Heartbeat, Job } from "./types";
 
 /** A single gate the job must pass to be runnable on this host, with the
  *  gate's outcome and a human-readable reason. */
 export interface ExplainGate {
-  /** Stable gate id: "active" | "scope" | "enabled-membership" | "owner-match". */
+  /** Stable gate id: "active" | "schedule" | "scope" | "enabled-membership" | "owner-match". */
   gate: string;
   /** Whether the job passes this gate. */
   passed: boolean;
@@ -34,8 +35,9 @@ export interface ExplainReport {
   schedule: string;
   scope: "each" | "single";
   isActive: boolean;
-  /** Active AND gated to this host — i.e. the daemon would fire it here.
-   *  Mirrors {@link JobStatus.runnable} in ./status. */
+  /** Active, with a non-blank schedule, and gated to this host — i.e.
+   *  {@link ./select.selectRunnable} would pick it. Mirrors
+   *  {@link JobStatus.runnable} in ./status. */
   runnable: boolean;
   /** The ordered gates applied, and how each one went. The first failing gate
    *  (if any) is the reason the job is not runnable. */
@@ -62,11 +64,12 @@ export interface ExplainOptions {
  * erroring. The gates mirror {@link ./select.selectRunnable} exactly:
  *
  *   1. active            — `isActive === true` (invariant gate for all jobs)
- *   2. scope             — the job's declared `scope` (informational)
- *   3. enabled-membership — `scope === "each"`: job is in this host's enabled set
- *   4. owner-match        — `scope === "single"`: `owners[name] === host`
+ *   2. schedule          — `cronSchedule` is not blank
+ *   3. scope             — the job's declared `scope` (informational)
+ *   4. enabled-membership — `scope === "each"`: job is in this host's enabled set
+ *   5. owner-match        — `scope === "single"`: `owners[name] === host`
  *
- * A job is runnable iff it passes all of gates 1, 3/4 (as applicable). Gates
+ * A job is runnable iff it passes gates 1, 2, and 4/5 (as applicable). Gates
  * are reported in order; a failing gate is a hard stop for the *runnable*
  * conclusion but subsequent gates are still evaluated and reported so the
  * operator sees the full picture (e.g. an inactive each-job that's also not
@@ -95,6 +98,10 @@ export function explainJob<T>(args: {
     ? { gate: "active", passed: true, reason: "job is active" }
     : { gate: "active", passed: false, reason: "job is inactive (isActive === false) — the daemon never fires it" };
 
+  const scheduleGate: ExplainGate = job.cronSchedule.trim() === ""
+    ? { gate: "schedule", passed: false, reason: "cronSchedule is blank — the daemon skips jobs with no schedule" }
+    : { gate: "schedule", passed: true, reason: `schedule is ${JSON.stringify(job.cronSchedule)}` };
+
   // Gate 2: scope (informational — the job's declared intent).
   const scopeGate: ExplainGate = {
     gate: "scope",
@@ -118,24 +125,14 @@ export function explainJob<T>(args: {
       : { gate: "owner-match", passed: false, reason: `owner is ${JSON.stringify(owner)} (not this host ${JSON.stringify(host)})` };
   })();
 
-  // Authoritative runnable = mirrors selectRunnable.
-  let runnable: boolean;
-  if (!job.isActive || job.cronSchedule.trim() === "") {
-    runnable = false;
-  } else if (job.scope === "single") {
-    runnable = owners[job.name] === host;
-  } else if (job.scope === "each") {
-    runnable = enabled.has(job.name);
-  } else {
-    runnable = false;
-  }
+  const runnable = selectRunnable([job], host, enabled, owners).length === 1;
 
   // Report the gates in the order they apply for this job's scope. The
   // scope-applicable gate is authoritative; the scope-inapplicable one is
   // included with `passed: true` and a "not applicable" reason so the operator
   // sees the full state (e.g. an each-job that also happens to have an owner
   // entry) without it reading as a failure.
-  const gates: ExplainGate[] = [activeGate, scopeGate];
+  const gates: ExplainGate[] = [activeGate, scheduleGate, scopeGate];
   const naEnabled: ExplainGate = { gate: "enabled-membership", passed: true, reason: "not applicable — scope is \"single\" (gated by owner-match)" };
   const naOwner: ExplainGate = { gate: "owner-match", passed: true, reason: "not applicable — scope is \"each\" (gated by enabled-membership)" };
   if (job.scope === "each") {

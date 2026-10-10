@@ -636,6 +636,41 @@ describe("explain", () => {
     expect(out).toContain("next fires: (none");
   });
 
+  test("runnable job with an unparseable schedule says it never fires in the headline", () => {
+    const badRegistry = join(dir, "registry-bad-cron.json");
+    const badConfig = join(dir, "config-bad-cron.json");
+    writeFileSync(
+      badRegistry,
+      JSON.stringify({ jobs: [{ name: "broken", cronSchedule: "not a cron", isActive: true, hosts: ["*"], scope: "each", metadata: {} }] }),
+    );
+    writeFileSync(enabledPath + ".bad", JSON.stringify(["broken"]));
+    writeFileSync(
+      badConfig,
+      JSON.stringify({
+        hostname: "ml-1",
+        registryPath: badRegistry,
+        enabledPath: enabledPath + ".bad",
+        topologyPath,
+        heartbeatPath,
+        syncedHeartbeatDir: null,
+        dispatchCommand: ["./run.sh"],
+        dispatchArgsTemplate: ["{job}"],
+        maxSleepMs: 60_000,
+        catchupLookbackFloorMs: 3_600_000,
+        catchupLookbackCapMs: 21_600_000,
+      }),
+    );
+    const out: string[] = [];
+    const code = runStatusCommand("explain", [badConfig, "broken"], {
+      now: () => NOW,
+      out: (s) => out.push(s),
+      err: () => {},
+      env: {},
+    });
+    expect(code).toBe(0);
+    expect(out.join("")).toContain("job=broken  host=ml-1  RUNNABLE (schedule invalid — never fires)\n");
+  });
+
   test("unknown job → exit 1, error message", () => {
     const { code, err } = run("explain", ["nonexistent"]);
     expect(code).toBe(1);
@@ -655,7 +690,7 @@ describe("explain", () => {
     expect(parsed.name).toBe("alpha");
     expect(parsed.runnable).toBe(true);
     expect(Array.isArray(parsed.gates)).toBe(true);
-    expect(parsed.gates.length).toBe(4);
+    expect(parsed.gates.length).toBe(5);
     expect(Array.isArray(parsed.nextFires)).toBe(true);
     expect(parsed.nextFires.length).toBe(5);
     expect(parsed.lastFired).toBe(NOW_MS);
