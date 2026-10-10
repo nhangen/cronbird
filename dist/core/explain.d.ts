@@ -19,8 +19,11 @@ import type { Heartbeat, Job, RunRecord } from "./types";
 export interface ExplainGate {
     /** Stable gate id: "active" | "schedule" | "scope" | "enabled-membership" | "owner-match". */
     gate: string;
-    /** Whether the job passes this gate. */
+    /** Whether the job passes this gate. Always true when `applicable` is false. */
     passed: boolean;
+    /** False for the scope-specific gate that does not apply to this job's scope
+     *  (owner-match for an each-job, enabled-membership for a single-job). */
+    applicable: boolean;
     /** Human-readable reason for the outcome. */
     reason: string;
 }

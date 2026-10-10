@@ -487,7 +487,7 @@ function renderExplain(report: ExplainReport, configPath: string, parsed: Parsed
 
   const gateRows: string[][] = [["GATE", "PASSED", "REASON"]];
   for (const g of report.gates) {
-    gateRows.push([g.gate, g.passed ? "yes" : "no", g.reason]);
+    gateRows.push([g.gate, !g.applicable ? "n/a" : g.passed ? "yes" : "no", g.reason]);
   }
   deps.out(table(gateRows) + "\n");
 

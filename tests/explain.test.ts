@@ -77,10 +77,10 @@ describe("explainJob — runnable each-job", () => {
     // All gates passed
     expect(r.gates.every((g) => g.passed)).toBe(true);
     expect(r.gates.map((g) => g.gate)).toEqual(["active", "schedule", "scope", "enabled-membership", "owner-match"]);
-    // The owner-match gate is "not applicable" for each-scope (passed: true)
     const ownerGate = r.gates.find((g) => g.gate === "owner-match")!;
-    expect(ownerGate.passed).toBe(true);
+    expect(ownerGate.applicable).toBe(false);
     expect(ownerGate.reason).toContain("not applicable");
+    expect(r.gates.filter((g) => g.applicable).map((g) => g.gate)).toEqual(["active", "schedule", "scope", "enabled-membership"]);
   });
 
   test("--count: 0 → no next fires", () => {
@@ -186,9 +186,8 @@ describe("explainJob — single-scope gating", () => {
     const ownerGate = r.gates.find((g) => g.gate === "owner-match")!;
     expect(ownerGate.passed).toBe(true);
     expect(ownerGate.reason).toContain("this host");
-    // enabled-membership is not applicable for single-scope
     const enabledGate = r.gates.find((g) => g.gate === "enabled-membership")!;
-    expect(enabledGate.passed).toBe(true);
+    expect(enabledGate.applicable).toBe(false);
     expect(enabledGate.reason).toContain("not applicable");
   });
 

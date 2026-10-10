@@ -22,8 +22,11 @@ import type { Heartbeat, Job, RunRecord } from "./types";
 export interface ExplainGate {
   /** Stable gate id: "active" | "schedule" | "scope" | "enabled-membership" | "owner-match". */
   gate: string;
-  /** Whether the job passes this gate. */
+  /** Whether the job passes this gate. Always true when `applicable` is false. */
   passed: boolean;
+  /** False for the scope-specific gate that does not apply to this job's scope
+   *  (owner-match for an each-job, enabled-membership for a single-job). */
+  applicable: boolean;
   /** Human-readable reason for the outcome. */
   reason: string;
 }
@@ -112,17 +115,18 @@ export function explainJob<T>(args: {
 
   // Gate 1: active (invariant for all jobs).
   const activeGate: ExplainGate = job.isActive
-    ? { gate: "active", passed: true, reason: "job is active" }
-    : { gate: "active", passed: false, reason: "job is inactive (isActive === false) — the daemon never fires it" };
+    ? { gate: "active", passed: true, applicable: true, reason: "job is active" }
+    : { gate: "active", passed: false, applicable: true, reason: "job is inactive (isActive === false) — the daemon never fires it" };
 
   const scheduleGate: ExplainGate = job.cronSchedule.trim() === ""
-    ? { gate: "schedule", passed: false, reason: "cronSchedule is blank — the daemon skips jobs with no schedule" }
-    : { gate: "schedule", passed: true, reason: `schedule is ${JSON.stringify(job.cronSchedule)}` };
+    ? { gate: "schedule", passed: false, applicable: true, reason: "cronSchedule is blank — the daemon skips jobs with no schedule" }
+    : { gate: "schedule", passed: true, applicable: true, reason: `schedule is ${JSON.stringify(job.cronSchedule)}` };
 
   // Gate 2: scope (informational — the job's declared intent).
   const scopeGate: ExplainGate = {
     gate: "scope",
     passed: true,
+    applicable: true,
     reason: `scope is "${job.scope}"` + (job.scope === "single" ? " (runs only on its owner)" : " (runs on every host that enables it)"),
   };
 
@@ -130,16 +134,16 @@ export function explainJob<T>(args: {
   // only the scope-applicable one is authoritative for the runnable conclusion.
   const enabledGate: ExplainGate =
     enabled.has(job.name)
-      ? { gate: "enabled-membership", passed: true, reason: `job is in this host's enabled set (${JSON.stringify(host)})` }
-      : { gate: "enabled-membership", passed: false, reason: `job is NOT in this host's enabled set (${JSON.stringify(host)})${enabledNote}` };
+      ? { gate: "enabled-membership", passed: true, applicable: true, reason: `job is in this host's enabled set (${JSON.stringify(host)})` }
+      : { gate: "enabled-membership", passed: false, applicable: true, reason: `job is NOT in this host's enabled set (${JSON.stringify(host)})${enabledNote}` };
   const ownerGate: ExplainGate = (() => {
     const owner = owners[job.name];
     if (owner === undefined) {
-      return { gate: "owner-match", passed: false, reason: `no owner declared for this job in topology.owners${topologyNote}` };
+      return { gate: "owner-match", passed: false, applicable: true, reason: `no owner declared for this job in topology.owners${topologyNote}` };
     }
     return owner === host
-      ? { gate: "owner-match", passed: true, reason: `owner is ${JSON.stringify(owner)} (this host)` }
-      : { gate: "owner-match", passed: false, reason: `owner is ${JSON.stringify(owner)} (not this host ${JSON.stringify(host)})` };
+      ? { gate: "owner-match", passed: true, applicable: true, reason: `owner is ${JSON.stringify(owner)} (this host)` }
+      : { gate: "owner-match", passed: false, applicable: true, reason: `owner is ${JSON.stringify(owner)} (not this host ${JSON.stringify(host)})` };
   })();
 
   const runnable = selectRunnable([job], host, enabled, owners).length === 1;
@@ -150,8 +154,8 @@ export function explainJob<T>(args: {
   // sees the full state (e.g. an each-job that also happens to have an owner
   // entry) without it reading as a failure.
   const gates: ExplainGate[] = [activeGate, scheduleGate, scopeGate];
-  const naEnabled: ExplainGate = { gate: "enabled-membership", passed: true, reason: "not applicable — scope is \"single\" (gated by owner-match)" };
-  const naOwner: ExplainGate = { gate: "owner-match", passed: true, reason: "not applicable — scope is \"each\" (gated by enabled-membership)" };
+  const naEnabled: ExplainGate = { gate: "enabled-membership", passed: true, applicable: false, reason: "not applicable — scope is \"single\" (gated by owner-match)" };
+  const naOwner: ExplainGate = { gate: "owner-match", passed: true, applicable: false, reason: "not applicable — scope is \"each\" (gated by enabled-membership)" };
   if (job.scope === "each") {
     gates.push(enabledGate, naOwner);
   } else {

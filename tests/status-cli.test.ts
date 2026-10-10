@@ -624,6 +624,16 @@ describe("explain", () => {
     expect(out).toContain("mb-pro");
   });
 
+  test("inapplicable gate shows n/a, not yes", () => {
+    const { out } = run("explain", ["alpha"]);
+    expect(out).toMatch(/^owner-match\s+n\/a\s+not applicable/m);
+  });
+
+  test("loader warnings reach stderr", () => {
+    const { err } = runWith({ registry: { jobs: [everyMinute("alpha"), { name: "nosched" }] }, enabled: ["alpha"] }, "explain", ["alpha"]);
+    expect(err).toContain("warning: skipped nosched: missing cronSchedule");
+  });
+
   test("human output shows last fired and the next-fire table", () => {
     const { out } = run("explain", ["alpha"]);
     expect(out).toContain("last fired: now\n");
