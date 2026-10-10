@@ -14,7 +14,7 @@ function runCli(args: string[]) {
 describe("usageText", () => {
   test("lists every subcommand and the daemon mode", () => {
     const u = usageText();
-    for (const token of ["cronbird <config.json>", "list", "next-runs", "status", "simulate", "help", "--within", "--from"]) {
+    for (const token of ["cronbird <config.json>", "list", "next-runs", "status", "history", "simulate", "explain", "help", "--within", "--from"]) {
       expect(u).toContain(token);
     }
   });
@@ -32,6 +32,7 @@ describe("cronbird help / usage (end-to-end via spawn)", () => {
     expect(code).toBe(0);
     expect(out).toContain("Usage:");
     expect(out).toContain("next-runs");
+    expect(out).toContain("explain");
   });
 
   test("`--help` and `-h` → exit 0 with usage", () => {

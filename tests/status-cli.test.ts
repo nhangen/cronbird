@@ -9,6 +9,7 @@ afterAll(() => rmSync(dir, { recursive: true, force: true }));
 
 const registryPath = join(dir, "registry.json");
 const enabledPath = join(dir, "enabled.json");
+const topologyPath = join(dir, "topology.json");
 const heartbeatPath = join(dir, "heartbeat.json");
 const configPath = join(dir, "config.json");
 
@@ -23,10 +24,13 @@ beforeAll(() => {
         { name: "alpha", cronSchedule: "0 * * * *", isActive: true, hosts: ["*"], scope: "each", metadata: {} },
         { name: "bravo", cronSchedule: "0 6 * * *", isActive: true, hosts: ["*"], scope: "each", metadata: {} },
         { name: "off", cronSchedule: "0 * * * *", isActive: false, hosts: ["*"], scope: "each", metadata: {} },
+        { name: "solo", cronSchedule: "0 * * * *", isActive: true, hosts: ["*"], scope: "single", metadata: {} },
+        { name: "foreign", cronSchedule: "0 * * * *", isActive: true, hosts: ["*"], scope: "single", metadata: {} },
       ],
     }),
   );
   writeFileSync(enabledPath, JSON.stringify(["alpha", "bravo", "off"]));
+  writeFileSync(topologyPath, JSON.stringify({ hosts: ["ml-1", "mb-pro"], owners: { solo: "ml-1", foreign: "mb-pro" } }));
   writeFileSync(
     heartbeatPath,
     JSON.stringify({
@@ -42,7 +46,7 @@ beforeAll(() => {
       hostname: "ml-1",
       registryPath,
       enabledPath,
-      topologyPath: null,
+      topologyPath,
       heartbeatPath,
       syncedHeartbeatDir: null,
       dispatchCommand: ["./run.sh"],
@@ -54,7 +58,7 @@ beforeAll(() => {
   );
 });
 
-function run(sub: "status" | "list" | "next-runs" | "history", args: string[]) {
+function run(sub: "status" | "list" | "next-runs" | "history" | "explain", args: string[]) {
   const out: string[] = [];
   const err: string[] = [];
   const deps: StatusCliDeps = {
@@ -84,7 +88,7 @@ describe("list", () => {
     expect(code).toBe(0);
     const parsed = JSON.parse(out);
     expect(Array.isArray(parsed.jobs)).toBe(true);
-    expect(parsed.jobs.map((j: { name: string }) => j.name).sort()).toEqual(["alpha", "bravo", "off"]);
+    expect(parsed.jobs.map((j: { name: string }) => j.name).sort()).toEqual(["alpha", "bravo", "foreign", "off", "solo"]);
   });
 });
 
@@ -155,7 +159,7 @@ function runWith(
     historyAsDir?: boolean; // history path exists but is a directory, so it cannot be read as a file
     maxSleepMs?: number;
   },
-  sub: "status" | "list" | "next-runs" | "history",
+  sub: "status" | "list" | "next-runs" | "history" | "explain",
   args: string[] = [],
 ) {
   const d = mkdtempSync(join(tmpdir(), "cronbird-status-w-"));
@@ -582,5 +586,299 @@ describe("history subcommand", () => {
     const alpha = parsed.jobs.find((j: { name: string }) => j.name === "alpha");
     expect(alpha.lastRun).not.toBeNull();
     expect(alpha.lastRun.outcome).toBe("failure"); // newest alpha run was failure
+  });
+});
+
+describe("explain", () => {
+  test("runnable each-job → RUNNABLE verdict, gate table, next fires", () => {
+    const { code, out } = run("explain", ["alpha"]);
+    expect(code).toBe(0);
+    expect(out).toContain("job=alpha  host=ml-1  RUNNABLE\n");
+    expect(out).toContain("alpha");
+    expect(out).toContain("GATE");
+    expect(out).toContain("enabled-membership");
+    // next fires populated (alpha fires hourly; NOW is 12:00Z → 13:00Z is next)
+    expect(out).toContain("13:00:00");
+  });
+
+  test("inactive each-job → NOT RUNNABLE, active gate fails", () => {
+    const { code, out } = run("explain", ["off"]);
+    expect(code).toBe(0);
+    expect(out).toContain("job=off  host=ml-1  NOT RUNNABLE\n");
+    const activeLine = out.split("\n").find((l) => l.includes("active") && l.includes("inactive"));
+    expect(activeLine).toBeDefined();
+  });
+
+  test("single-job owned by this host → RUNNABLE", () => {
+    const { code, out } = run("explain", ["solo"]);
+    expect(code).toBe(0);
+    expect(out).toContain("job=solo  host=ml-1  RUNNABLE\n");
+    expect(out).toContain("owner-match");
+  });
+
+  test("single-job owned by another host → NOT RUNNABLE, owner gate fails", () => {
+    const { code, out } = run("explain", ["foreign"]);
+    expect(code).toBe(0);
+    expect(out).toContain("job=foreign  host=ml-1  NOT RUNNABLE\n");
+    // owner gate reason mentions "mb-pro" (the foreign owner)
+    expect(out).toContain("mb-pro");
+  });
+
+  test("inapplicable gate shows n/a, not yes", () => {
+    const { out } = run("explain", ["alpha"]);
+    expect(out).toMatch(/^owner-match\s+n\/a\s+not applicable/m);
+  });
+
+  test("loader warnings reach stderr", () => {
+    const { err } = runWith({ registry: { jobs: [everyMinute("alpha"), { name: "nosched" }] }, enabled: ["alpha"] }, "explain", ["alpha"]);
+    expect(err).toContain("warning: skipped nosched: missing cronSchedule");
+  });
+
+  test("human output shows last fired and the next-fire table", () => {
+    const { out } = run("explain", ["alpha"]);
+    expect(out).toContain("last fired: now\n");
+    expect(out).toMatch(/#\s+NEXT FIRE\s+IN/);
+  });
+
+  test("never-fired, not-runnable job shows '-' and the (none …) line", () => {
+    const { out } = run("explain", ["foreign"]);
+    expect(out).toContain("last fired: -");
+    expect(out).toContain("next fires: (none");
+  });
+
+  test("runnable job with an unparseable schedule says it never fires in the headline", () => {
+    const badRegistry = join(dir, "registry-bad-cron.json");
+    const badConfig = join(dir, "config-bad-cron.json");
+    writeFileSync(
+      badRegistry,
+      JSON.stringify({ jobs: [{ name: "broken", cronSchedule: "not a cron", isActive: true, hosts: ["*"], scope: "each", metadata: {} }] }),
+    );
+    writeFileSync(enabledPath + ".bad", JSON.stringify(["broken"]));
+    writeFileSync(
+      badConfig,
+      JSON.stringify({
+        hostname: "ml-1",
+        registryPath: badRegistry,
+        enabledPath: enabledPath + ".bad",
+        topologyPath,
+        heartbeatPath,
+        syncedHeartbeatDir: null,
+        dispatchCommand: ["./run.sh"],
+        dispatchArgsTemplate: ["{job}"],
+        maxSleepMs: 60_000,
+        catchupLookbackFloorMs: 3_600_000,
+        catchupLookbackCapMs: 21_600_000,
+      }),
+    );
+    const out: string[] = [];
+    const code = runStatusCommand("explain", [badConfig, "broken"], {
+      now: () => NOW,
+      out: (s) => out.push(s),
+      err: () => {},
+      env: {},
+    });
+    expect(code).toBe(0);
+    expect(out.join("")).toContain("job=broken  host=ml-1  RUNNABLE (schedule invalid — never fires)\n");
+    expect(out.join("")).toContain("schedule error: invalid cron expression");
+  });
+
+  test("unknown job → exit 1, error message", () => {
+    const { code, err } = run("explain", ["nonexistent"]);
+    expect(code).toBe(1);
+    expect(err).toContain(`error: unknown job: "nonexistent" (not in registry ${registryPath})`);
+  });
+
+  test("missing config file → exit 1 with config error prefix", () => {
+    const err: string[] = [];
+    const code = runStatusCommand("explain", [join(dir, "no-such-config.json"), "alpha"], {
+      now: () => NOW, out: () => {}, err: (s) => err.push(s), env: {},
+    });
+    expect(code).toBe(1);
+    expect(err.join("")).toMatch(/^config error: /m);
+  });
+
+  test("missing job name → exit 2, usage", () => {
+    const { code, err } = run("explain", []);
+    expect(code).toBe(2);
+    expect(err).toContain("job name");
+  });
+
+  test("--json emits parseable ExplainReport", () => {
+    const { code, out } = run("explain", ["alpha", "--json"]);
+    expect(code).toBe(0);
+    const parsed = JSON.parse(out);
+    expect(parsed.name).toBe("alpha");
+    expect(parsed.runnable).toBe(true);
+    expect(Array.isArray(parsed.gates)).toBe(true);
+    expect(parsed.gates.length).toBe(5);
+    expect(Array.isArray(parsed.nextFires)).toBe(true);
+    expect(parsed.nextFires.length).toBe(5);
+    expect(parsed.lastFired).toBe(NOW_MS);
+  });
+
+  test("--count limits next fires", () => {
+    const { code, out } = run("explain", ["alpha", "--count", "2", "--json"]);
+    expect(code).toBe(0);
+    const parsed = JSON.parse(out);
+    expect(parsed.nextFires.length).toBe(2);
+  });
+
+  test("--count 0 → no next fires", () => {
+    const { code, out } = run("explain", ["alpha", "--count", "0", "--json"]);
+    expect(code).toBe(0);
+    const parsed = JSON.parse(out);
+    expect(parsed.nextFires).toEqual([]);
+  });
+
+  test("invalid --count → exit 2", () => {
+    for (const bad of ["banana", "-1", "1.5", "", "  ", "1001"]) {
+      const { code, err } = run("explain", ["alpha", "--count", bad]);
+      expect(code).toBe(2);
+      expect(err).toContain("invalid --count");
+    }
+    const { code: missingCode, err: missingErr } = run("explain", ["alpha", "--count"]);
+    expect(missingCode).toBe(2);
+    expect(missingErr).toContain("invalid --count");
+  });
+
+  test("--count 1000 is accepted", () => {
+    expect(run("explain", ["alpha", "--count", "1000", "--json"]).code).toBe(0);
+  });
+
+  test("--count on another subcommand → exit 2", () => {
+    const { code, err } = run("status", ["--count", "3"]);
+    expect(code).toBe(2);
+    expect(err).toContain("--count is only valid for explain");
+  });
+
+  test("--count 0 says next fires were not requested", () => {
+    const { out } = run("explain", ["alpha", "--count", "0"]);
+    expect(out).toContain("next fires: (not requested — --count 0)");
+  });
+
+  test("reversed argument order: <job> <config.json> → exit 0, runs explain", () => {
+    const out: string[] = [];
+    const err: string[] = [];
+    const code = runStatusCommand("explain", ["alpha", configPath], {
+      now: () => NOW,
+      out: (s) => out.push(s),
+      err: (s) => err.push(s),
+      env: {},
+    });
+    expect(code).toBe(0);
+    expect(out.join("")).toContain("job=alpha  host=ml-1  RUNNABLE\n");
+    expect(out.join("")).toContain("alpha");
+  });
+
+  test("human and JSON output name the config that was read", () => {
+    expect(run("explain", ["alpha"]).out).toContain(`config:         ${configPath}\n`);
+    expect(JSON.parse(run("explain", ["alpha", "--json"]).out).configPath).toBe(configPath);
+  });
+
+  test("CRONBIRD_CONFIG substitution is visible when the lone argument was meant as a config", () => {
+    const err: string[] = [];
+    const code = runStatusCommand("explain", ["/etc/cronbird.conf"], {
+      now: () => NOW, out: () => {}, err: (s) => err.push(s), env: { CRONBIRD_CONFIG: configPath },
+    });
+    expect(code).toBe(1);
+    expect(err.join("")).toContain(`error: unknown job: "/etc/cronbird.conf" (not in registry ${registryPath})`);
+  });
+
+  test("lone argument without CRONBIRD_CONFIG → exit 2 naming both missing pieces", () => {
+    const err: string[] = [];
+    const code = runStatusCommand("explain", ["alpha"], { now: () => NOW, out: () => {}, err: (s) => err.push(s), env: {} });
+    expect(code).toBe(2);
+    expect(err.join("")).toContain("explain requires a config and a job name");
+  });
+
+  test("two .json arguments → the first is the config", () => {
+    const { code, err } = run("explain", ["alpha.json"]);
+    expect(code).toBe(1);
+    expect(err).toContain('unknown job: "alpha.json"');
+  });
+
+  test("extra positional arguments → exit 2", () => {
+    const { code, err } = run("explain", ["alpha", "bravo"]);
+    expect(code).toBe(2);
+    expect(err).toContain("unexpected argument");
+  });
+
+  test("CRONBIRD_CONFIG environment variable with single <job> argument → exit 0", () => {
+    const out: string[] = [];
+    const err: string[] = [];
+    const code = runStatusCommand("explain", ["alpha"], {
+      now: () => NOW,
+      out: (s) => out.push(s),
+      err: (s) => err.push(s),
+      env: { CRONBIRD_CONFIG: configPath },
+    });
+    expect(code).toBe(0);
+    expect(out.join("")).toContain("job=alpha  host=ml-1  RUNNABLE\n");
+    expect(out.join("")).toContain("alpha");
+  });
+});
+
+describe("explain — inputs beyond the shared fixture", () => {
+  test("lastFired falls back to run history when the heartbeat has no entry, matching status", () => {
+    const history = JSON.stringify({
+      job: "alpha",
+      scheduledFor: NOW_MS - 7_200_000,
+      startedAt: NOW_MS - 7_200_000,
+      finishedAt: NOW_MS - 7_190_000,
+      exitCode: 0,
+      outcome: "success",
+      durationMs: 10_000,
+    }) + "\n";
+    const opts = { registry: { jobs: [everyMinute("alpha")] }, enabled: ["alpha"], history };
+    const explained = JSON.parse(runWith(opts, "explain", ["alpha", "--json"]).out);
+    const status = JSON.parse(runWith(opts, "status", ["--json"]).out);
+    expect(explained.lastFired).toBe(NOW_MS - 7_200_000);
+    expect(explained.lastFired).toBe(status.jobs[0].lastFired);
+  });
+});
+
+describe("explain — registry problems are not reported as unknown jobs", () => {
+  test("unparseable registry → exit 1 naming the registry", () => {
+    const { code, err } = runWith({ registry: "{not json" }, "explain", ["alpha"]);
+    expect(code).toBe(1);
+    expect(err).toContain("error: registry could not be loaded");
+    expect(err).not.toContain("unknown job");
+  });
+
+  test("job row skipped by the parser → exit 1 with the skip reason", () => {
+    const registry = { jobs: [{ ...everyMinute("weird"), scope: "sometimes" }] };
+    const { code, err } = runWith({ registry }, "explain", ["weird"]);
+    expect(code).toBe(1);
+    expect(err).toContain('error: job "weird" is in the registry but was skipped: unknown scope');
+    expect(err).not.toContain("unknown job");
+  });
+});
+
+describe("explain — absent sidecar files are named in the gate reason", () => {
+  test("enabled file configured but missing", () => {
+    const { out } = runWith({ registry: { jobs: [everyMinute("alpha")] }, missingEnabledFile: true }, "explain", ["alpha"]);
+    expect(out).toMatch(/NOT in this host's enabled set .* — enabled file not found: .*enabled-missing\.json/);
+  });
+
+  test("enabledPath not configured", () => {
+    const { out } = runWith({ registry: { jobs: [everyMinute("alpha")] }, enabled: null }, "explain", ["alpha"]);
+    expect(out).toContain("— enabledPath is not configured");
+  });
+
+  test("topology file configured but missing", () => {
+    const registry = { jobs: [{ ...everyMinute("solo"), scope: "single" }] };
+    const { out } = runWith({ registry, missingTopologyFile: true }, "explain", ["solo"]);
+    expect(out).toMatch(/no owner declared for this job in topology\.owners — topology file not found: .*topology-missing\.json/);
+  });
+
+  test("topologyPath not configured", () => {
+    const registry = { jobs: [{ ...everyMinute("solo"), scope: "single" }] };
+    const { out } = runWith({ registry }, "explain", ["solo"]);
+    expect(out).toContain("— topologyPath is not configured");
+  });
+
+  test("present files add no note", () => {
+    const { out } = runWith({ registry: { jobs: [everyMinute("alpha")] }, enabled: [] }, "explain", ["alpha"]);
+    expect(out).toContain(`NOT in this host's enabled set ("ml-1")\n`);
   });
 });

@@ -19,6 +19,8 @@ export function usageText(): string {
     "                                                 query structured run-history log",
     "  cronbird simulate <config.json> --from <time> --to <time> [--json]",
     "                                                 dry-run / simulate dispatch schedule",
+    "  cronbird explain <config.json> <job-name> [--json] [--count <n>]",
+    "                                                 why a job is/isn't runnable on this host (gate table + next fires)",
     "  cronbird help                                  show this help",
     "",
     "  <dur> is Nd / Nh / Nm / Ns (e.g. 30m, 2h, 1d).",
