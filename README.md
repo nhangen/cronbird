@@ -219,6 +219,9 @@ nightly-sync  2026-10-09T02:00:00.000Z  4h ago   45.1s     failure  1
 - Dispatches nothing and persists no state.
 - Wires the real file providers (`enabledPath`, `topologyPath`, `registryPath`), answering "what will this configuration actually do?" and exposing configuration issues (such as `enabledPath: null`) immediately.
 - Prints the would-dispatch schedule in order of fire time.
+- Warns on stderr about each active job it skips: not runnable on this host, an unparseable cron, or a schedule that never fires.
+- Exits 1 with `config error:` when the registry can't be loaded, or when an enabled/topology file is present but unreadable.
+- Starts with no heartbeat, so it doesn't show the catch-up fires a daemon restarting at T0 would run.
 
 ```bash
 cronbird simulate ./cronbird.config.json --from 2026-07-01T00:00:00Z --to 2026-07-02T00:00:00Z
