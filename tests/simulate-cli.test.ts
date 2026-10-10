@@ -237,6 +237,12 @@ describe("simulate CLI — time parsing", () => {
     expect(run([configPath, "--from", "123456789012", "--to", "now"]).code).toBe(2);
   });
 
+  test("relative duration beyond the Date range exits 2 naming the flag", () => {
+    const { code, err } = run([configPath, "--from", "now", "--to", "+99999999d"]);
+    expect(code).toBe(2);
+    expect(err).toContain("invalid --to value: \"+99999999d\"");
+  });
+
   test("zero-padded epoch seconds are rejected, not resolved to 1970", () => {
     const { code, err } = run([configPath, "--from", "0001782896400", "--to", "now"]);
     expect(code).toBe(2);

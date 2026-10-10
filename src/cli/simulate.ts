@@ -46,6 +46,11 @@ function parseDuration(s: string | undefined): number | null {
  * - Bare durations: defaultDir indicates whether bare "1h" means past (-1) or future (+1)
  */
 function parseTime(s: string | undefined, nowMs: number, defaultDir: -1 | 1): number | null {
+  const ms = resolveTime(s, nowMs, defaultDir);
+  return ms !== null && Math.abs(ms) <= MAX_DATE_MS ? ms : null;
+}
+
+function resolveTime(s: string | undefined, nowMs: number, defaultDir: -1 | 1): number | null {
   if (!s) return null;
   const trimmed = s.trim();
   if (trimmed === "now") return nowMs;
@@ -66,8 +71,7 @@ function parseTime(s: string | undefined, nowMs: number, defaultDir: -1 | 1): nu
 
   if (/^\d+$/.test(trimmed)) {
     const n = Number(trimmed);
-    if (n >= 1e12 && n <= MAX_DATE_MS) return n;
-    return null;
+    return n >= 1e12 ? n : null;
   }
 
   // Without an explicit zone Date.parse falls back to host-local time, and its
