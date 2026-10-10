@@ -58,6 +58,20 @@ export interface RunningSlotInfo {
     slotTs: number;
     startedAt: number;
 }
+/**
+ * Outcome record emitted by the dispatch wrapper for a job.
+ *
+ * `ts` is the epoch-ms at which the run started (not completed) — that is
+ * what the overlap guard uses: an outcome whose `ts` is within
+ * `maxDispatchWindowMs` of now means "a run is in-flight or just started",
+ * so the daemon skips re-enqueueing the same job into the same slot.
+ * `exitCode` is the exit code of the most recent completion (0 = success);
+ * it is recorded for observability and does not gate the overlap check.
+ */
+export interface DispatchOutcome {
+    ts: number;
+    exitCode: number;
+}
 export interface Heartbeat {
     ts: number;
     host: string;
@@ -68,6 +82,8 @@ export interface Heartbeat {
     dispatched_minute: Record<string, number>;
     /** jobName → epoch-ms of the newest slot fired (drives catch-up). */
     last_fired: Record<string, number>;
+    /** jobName → last run outcome for the overlap guard. Defaults to {} when absent. */
+    outcome?: Record<string, DispatchOutcome>;
     /** Persisted priority queue so a restart resumes the backlog. */
     queue: QueueEntry[];
     /** jobName → startedTs of an in-flight run (restored from running/ dir). */

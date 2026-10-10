@@ -1,4 +1,4 @@
-export type { Job, Topology, Heartbeat, DispatchRecord, QueueEntry, CompletionRecord, RunRecord, RunOutcome, RunningSlotInfo } from "./types";
+export type { Job, Topology, Heartbeat, DispatchRecord, QueueEntry, CompletionRecord, RunRecord, RunOutcome, RunningSlotInfo, DispatchOutcome } from "./types";
 export { createMatcher, assertValidTimezone, matcherForJob } from "./cron";
 export type { CronMatcher, MatcherOptions } from "./cron";
 export { InvalidTimezoneError } from "./cron";

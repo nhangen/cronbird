@@ -1,6 +1,6 @@
 import { type CronMatcher } from "./cron";
 import { RunQueue } from "./run-queue";
-import type { CompletionRecord, DispatchRecord, Heartbeat, Job, RunRecord, Topology } from "./types";
+import type { CompletionRecord, DispatchOutcome, DispatchRecord, Heartbeat, Job, RunRecord, Topology } from "./types";
 export interface DaemonDeps<T = unknown> {
     now(): Date;
     sleep(ms: number): Promise<void>;
@@ -65,6 +65,20 @@ export interface DaemonDeps<T = unknown> {
         running: Record<string, number>;
         done: Record<string, CompletionRecord>;
     };
+    /**
+     * Load job outcomes (per-job `{ts, exitCode}` records) for the overlap
+     * guard. `ts` is the run's start time; an outcome whose `ts` is within
+     * `maxDispatchWindowMs` of now is treated as "in-flight" and the job is
+     * skipped this tick. Optional — when absent, the overlap guard is disabled
+     * and behavior matches the pre-guard dispatch.
+     */
+    loadOutcomes?(): Record<string, DispatchOutcome>;
+    /**
+     * Overlap-guard threshold in ms. A job whose outcome `ts` is within this
+     * window of `now` is considered in-flight and skipped. Optional; defaults
+     * to 30_000 (30 s) when omitted.
+     */
+    maxDispatchWindowMs?: number;
     /**
      * Product-supplied per-job cooldown in seconds. A job whose last completion
      * (from `readCompletions().done`) is more recent than its cooldown is NOT

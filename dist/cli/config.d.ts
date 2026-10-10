@@ -11,10 +11,12 @@ export interface CronbirdConfig {
     historyPath: string | null;
     maxHistoryRecords: number | null;
     historyRetentionMs: number | null;
+    outcomeDir: string | null;
     dispatchCommand: string[];
     dispatchArgsTemplate: string[];
     maxSleepMs: number;
     catchupLookbackFloorMs: number;
     catchupLookbackCapMs: number;
+    maxDispatchWindowMs: number | null;
 }
 export declare function parseConfig(raw: string, env: Record<string, string | undefined>): CronbirdConfig;
