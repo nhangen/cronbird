@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { createMatcher, simulateSchedule, type Job } from "../src/core/index";
+import { createMatcher, simulateSchedule, type CronMatcher, type Job, type JobMatcherResolver } from "../src/core/index";
 
 const m = createMatcher({ timezone: "UTC" });
 const d = (iso: string) => new Date(iso);
@@ -358,5 +358,32 @@ describe("simulateSchedule — skipped-job diagnostics", () => {
     });
 
     expect(report.warnings).toEqual(['feb30: schedule "0 0 30 2 *" never fires']);
+  });
+});
+
+describe("simulateSchedule — matcher injection", () => {
+  test("an injected matcherResolver takes precedence over matcher", () => {
+    const resolved: string[] = [];
+    const resolver: JobMatcherResolver = { resolve: (job) => (resolved.push(job.name), m) };
+    const neverUsed: CronMatcher = {
+      nextFire: () => {
+        throw new Error("matcher should be ignored when matcherResolver is set");
+      },
+      matchesAt: () => {
+        throw new Error("matcher should be ignored when matcherResolver is set");
+      },
+    };
+    const report = simulateSchedule({
+      from: d("2026-06-01T00:00:00Z"),
+      to: d("2026-06-01T12:00:00Z"),
+      host: "ml-1",
+      jobs: [pb({ name: "nine", cronSchedule: "0 9 * * *" })],
+      enabled: new Set(["nine"]),
+      owners: {},
+      matcher: neverUsed,
+      matcherResolver: resolver,
+    });
+    expect(resolved).toContain("nine");
+    expect(report.dispatches.map((x) => x.timeIso)).toEqual(["2026-06-01T09:00:00.000Z"]);
   });
 });

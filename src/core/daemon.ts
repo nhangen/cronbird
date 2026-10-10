@@ -53,10 +53,10 @@ export interface DaemonDeps<T = unknown> {
   writeHeartbeat(hb: Heartbeat): void;
   log(msg: string): void;
   host: string;
-  /** Optional resolver for creating matchers; if not provided, creates a fresh per-caller resolver. */
+  /** Default (host-local) matcher for jobs without a timezone. */
+  matcher: CronMatcher;
+  /** Per-job matcher resolver; takes precedence over `matcher` when provided. */
   matcherResolver?: JobMatcherResolver;
-  /** Default matcher for jobs without a timezone (used when matcherResolver is not provided). */
-  matcher?: CronMatcher;
   maxSleepMs: number;
   /**
    * Catch-up look-back resolver: given a job and the current `now`,
