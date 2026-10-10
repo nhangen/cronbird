@@ -13,7 +13,7 @@
  */
 import { catchUpFires } from "./catchup";
 import { FATAL_EXIT_CODE, MAX_ATTEMPTS, MAX_CONCURRENT } from "./constants";
-import { matcherForJob, type CronMatcher } from "./cron";
+import { createJobMatcherResolver, type CronMatcher, type JobMatcherResolver } from "./cron";
 import { failedJobs, isEligible, transitiveUpstreamFailed, validateDependencies } from "./dependencies";
 import { RunQueue } from "./run-queue";
 import { dueAt, nextWake, selectRunnable } from "./select";
@@ -53,8 +53,10 @@ export interface DaemonDeps<T = unknown> {
   writeHeartbeat(hb: Heartbeat): void;
   log(msg: string): void;
   host: string;
-  /** Default (host-local) matcher; per-job timezone is handled via {@link matcherForJob}. */
+  /** Default (host-local) matcher for jobs without a timezone. */
   matcher: CronMatcher;
+  /** Per-job matcher resolver; takes precedence over `matcher` when provided. */
+  matcherResolver?: JobMatcherResolver;
   maxSleepMs: number;
   /**
    * Catch-up look-back resolver: given a job and the current `now`,
@@ -134,6 +136,7 @@ function epochMinute(when: Date): number {
 
 export async function runForever<T>(deps: DaemonDeps<T>): Promise<void> {
   const prior = deps.readHeartbeat();
+  const hostResolver = deps.matcherResolver ?? createJobMatcherResolver(deps.matcher);
   // Last-good topology owners. Unlike enabled (safe-empty on a torn read), topology
   // owners are authoritative cross-host state: transiently losing them would
   // de-own a single-scope job and skip a run that minute.
@@ -177,7 +180,7 @@ export async function runForever<T>(deps: DaemonDeps<T>): Promise<void> {
   };
 
   while (deps.shouldContinue()) {
-    const wake = runOneTick(deps, state);
+    const wake = runOneTick(deps, state, hostResolver);
     await deps.sleep(wake);
   }
 }
@@ -191,7 +194,7 @@ export async function runForever<T>(deps: DaemonDeps<T>): Promise<void> {
  * Behaviour matches the former inlined loop body: dispatch stays fire-and-forget
  * and happens strictly AFTER the heartbeat write (at-most-once over double-fire).
  */
-export function runOneTick<T>(deps: DaemonDeps<T>, state: TickState<T>): number {
+export function runOneTick<T>(deps: DaemonDeps<T>, state: TickState<T>, hostResolver: JobMatcherResolver): number {
   const now = deps.now();
   const minute = epochMinute(now);
 
@@ -249,7 +252,7 @@ export function runOneTick<T>(deps: DaemonDeps<T>, state: TickState<T>): number 
   // returns slots strictly before the current minute, so it can't already
   // overlap `due` today — but it keeps a single tick from double-dispatching a
   // job if that exclusion ever changes.
-  const due = dueAt(runnable, now, (p) => matcherForJob(p, deps.matcher)).filter((p) => {
+  const due = dueAt(runnable, now, (p) => hostResolver.resolve(p)).filter((p) => {
     const lastGuard = state.guard.get(p.name);
     if (lastGuard !== undefined && lastGuard >= minute) return false;
     const lastFired = state.lastFired[p.name];
@@ -257,7 +260,7 @@ export function runOneTick<T>(deps: DaemonDeps<T>, state: TickState<T>): number 
     return true;
   });
   const dueNames = new Set(due.map((p) => p.name));
-  const catches = catchUpFires(runnable, state.lastFired, now, (p) => matcherForJob(p, deps.matcher), (p) => deps.resolveLookback(p, now)).filter(
+  const catches = catchUpFires(runnable, state.lastFired, now, (p) => hostResolver.resolve(p), (p) => deps.resolveLookback(p, now)).filter(
     (f) => !dueNames.has(f.job.name),
   );
 
@@ -385,7 +388,7 @@ export function runOneTick<T>(deps: DaemonDeps<T>, state: TickState<T>): number 
     }
   }
 
-  const wake = nextWake(runnable, now, (p) => matcherForJob(p, deps.matcher), deps.maxSleepMs);
+  const wake = nextWake(runnable, now, (p) => hostResolver.resolve(p), deps.maxSleepMs);
 
   // SELECT the drain set up to MAX_CONCURRENT, highest priority first among the
   // dependency-eligible. `running` comes from the wrapper's `done/`+`running/`

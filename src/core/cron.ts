@@ -118,21 +118,54 @@ export function createMatcher(opts: MatcherOptions = {}): CronMatcher {
   return new CronerMatcher(opts);
 }
 
-const matcherCache = new Map<string, CronMatcher>();
+/**
+ * Resolves a {@link CronMatcher} for a job. Each resolver instance owns a
+ * private per-timezone cache, so different callers (tests, simulate runs,
+ * daemons) never share state.
+ */
+export interface JobMatcherResolver {
+  /**
+   * Return the matcher for the given job. Jobs without a timezone return the
+   * resolver's default matcher; jobs with a timezone get a per-timezone cached
+   * matcher (created once per timezone string per resolver).
+   */
+  resolve(job: Job): CronMatcher;
+}
+
+/**
+ * Create a matcher resolver with its own isolated per-timezone cache.
+ *
+ * Jobs without a `timezone` return `defaultMatcher` (or a host-local
+ * `createMatcher()` when none is supplied). Jobs with a `timezone` get a
+ * dedicated matcher, cached inside this resolver only — no module-level
+ * state is shared.
+ */
+export function createJobMatcherResolver(defaultMatcher?: CronMatcher): JobMatcherResolver {
+  const byTimezone = new Map<string, CronMatcher>();
+  const fallback = defaultMatcher ?? createMatcher();
+
+  return {
+    resolve: (job: Job) => {
+      if (!job.timezone) return fallback;
+      const cached = byTimezone.get(job.timezone);
+      if (cached) return cached;
+      const m = createMatcher({ timezone: job.timezone });
+      byTimezone.set(job.timezone, m);
+      return m;
+    },
+  };
+}
 
 /**
  * Return the correct {@link CronMatcher} for a job, honouring its
  * `timezone` field. Jobs without a `timezone` fall through to
  * `defaultMatcher` (typically a host-local `createMatcher()`).
  *
- * Matchers are cached per timezone string so repeated calls for jobs that
- * share a zone do not re-validate or re-allocate.
+ * @deprecated Use {@link createJobMatcherResolver} to get a per-caller
+ * resolver with isolated state, or inject a `JobMatcherResolver` directly
+ * into daemon/simulate entry points.
  */
 export function matcherForJob(job: Job, defaultMatcher: CronMatcher): CronMatcher {
   if (!job.timezone) return defaultMatcher;
-  const cached = matcherCache.get(job.timezone);
-  if (cached) return cached;
-  const m = createMatcher({ timezone: job.timezone });
-  matcherCache.set(job.timezone, m);
-  return m;
+  return createMatcher({ timezone: job.timezone });
 }

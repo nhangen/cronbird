@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { lookbackForSchedule } from "../src/core/catchup";
-import { createMatcher, matcherForJob } from "../src/core/cron";
+import { createMatcher, matcherForJob, type CronMatcher, type JobMatcherResolver } from "../src/core/cron";
 import type { Job, Topology, Heartbeat, CompletionRecord, RunRecord } from "../src/core/types";
 import { type DaemonDeps, runForever } from "../src/core/daemon";
 import { CATCHUP_LOOKBACK_CAP_MS, CATCHUP_LOOKBACK_FLOOR_MS, FATAL_EXIT_CODE } from "../src/core/constants";
@@ -1047,6 +1047,49 @@ describe("per-job timezone through runForever", () => {
     });
     await runForever(h.deps);
     expect(h.sleeps).toEqual([60_000]);
+  });
+});
+
+describe("matcher injection", () => {
+  const spyMatcher = (inner: CronMatcher) => {
+    const calls = { n: 0 };
+    const matcher: CronMatcher = {
+      nextFire: (expr, from) => (calls.n++, inner.nextFire(expr, from)),
+      matchesAt: (expr, when) => (calls.n++, inner.matchesAt(expr, when)),
+    };
+    return { matcher, calls };
+  };
+
+  test("deps.matcher drives untimezoned jobs when no resolver is injected", async () => {
+    const h = harness({ nows: [d("2026-06-01T09:00:00Z")], playbooks: [pb({ name: "nine", cronSchedule: "0 9 * * *" })] });
+    const spy = spyMatcher(m);
+    h.deps.matcher = spy.matcher;
+    await runForever(h.deps);
+    expect(spy.calls.n).toBeGreaterThan(0);
+    expect(h.dispatched).toEqual(["nine"]);
+  });
+
+  test("an injected matcherResolver takes precedence over deps.matcher", async () => {
+    const h = harness({ nows: [d("2026-06-01T09:00:00Z")], playbooks: [pb({ name: "nine", cronSchedule: "0 9 * * *" })] });
+    const unused = spyMatcher(m);
+    const used = spyMatcher(m);
+    const resolved: string[] = [];
+    const resolver: JobMatcherResolver = { resolve: (job) => (resolved.push(job.name), used.matcher) };
+    h.deps.matcher = unused.matcher;
+    h.deps.matcherResolver = resolver;
+    await runForever(h.deps);
+    expect(resolved).toContain("nine");
+    expect(used.calls.n).toBeGreaterThan(0);
+    expect(unused.calls.n).toBe(0);
+    expect(h.dispatched).toEqual(["nine"]);
+  });
+
+  test("matcher is required on DaemonDeps", () => {
+    const { deps } = harness({ nows: [], playbooks: [] });
+    const { matcher: _omitted, ...rest } = deps;
+    // @ts-expect-error a default matcher must be chosen explicitly
+    const bad: DaemonDeps<unknown> = rest;
+    expect(bad.matcher).toBeUndefined();
   });
 });
 
