@@ -422,7 +422,13 @@ export function runOneTick<T>(deps: DaemonDeps<T>, state: TickState<T>): number 
     // so it never wedges the chain — the next eligible entry is picked.
     const slotTs = state.slotTsByName[candidate.name] ?? now.getTime();
     const job = jobByName.get(candidate.name);
-    if (job && now.getTime() - slotTs > deps.resolveLookback(job, now)) {
+    if (!job) {
+      state.queue.remove(candidate.name);
+      delete state.slotTsByName[candidate.name];
+      deps.log(`dropped queued slot ${candidate.name}: job no longer runnable on this host`);
+      continue;
+    }
+    if (now.getTime() - slotTs > deps.resolveLookback(job, now)) {
       state.queue.remove(candidate.name);
       delete state.slotTsByName[candidate.name];
       deps.log(`evicted stale slot ${candidate.name} (age ${now.getTime() - slotTs}ms)`);

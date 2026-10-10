@@ -963,6 +963,38 @@ describe("staleness eviction — Task E", () => {
   });
 });
 
+describe("queued slot for a job that left the runnable set", () => {
+  test("a stale slot for a deactivated job is dropped, not dispatched", async () => {
+    const now = d("2026-07-07T19:00:00Z");
+    const staleTs = d("2026-07-07T09:00:00Z").getTime();
+    const hb = h0Heartbeat({ queue: [{ name: "gone", priority: 1, slotTs: staleTs }] });
+    const h = harness({
+      nows: [now],
+      playbooks: [pb({ name: "gone", cronSchedule: "0 9 * * *", isActive: false })],
+      startHeartbeat: hb,
+      readCompletions: () => ({ running: {}, done: {} }),
+    });
+    await runForever(h.deps);
+    expect(h.dispatched).toEqual([]);
+    expect(h.logs.some((l) => l.includes("dropped queued slot gone"))).toBe(true);
+    expect((h.heartbeats.at(-1)!.queue ?? []).some((e) => e.name === "gone")).toBe(false);
+  });
+
+  test("a fresh slot for a deactivated job is dropped too", async () => {
+    const now = d("2026-07-07T09:00:30Z");
+    const hb = h0Heartbeat({ queue: [{ name: "gone", priority: 1, slotTs: d("2026-07-07T09:00:00Z").getTime() }] });
+    const h = harness({
+      nows: [now],
+      playbooks: [pb({ name: "gone", cronSchedule: "0 10 * * *", isActive: false })],
+      startHeartbeat: hb,
+      lookback: 60 * 60_000,
+      readCompletions: () => ({ running: {}, done: {} }),
+    });
+    await runForever(h.deps);
+    expect(h.dispatched).toEqual([]);
+  });
+});
+
 describe("run history recording — Ticket #3", () => {
   test("dispatch records an in-flight RunRecord with slotTs and startedAt", async () => {
     const now = d("2026-06-01T09:00:00Z");
