@@ -280,6 +280,14 @@ describe("simulate CLI — time parsing", () => {
     ]);
   });
 
+  test("non-ISO input with a trailing zone is rejected", () => {
+    for (const v of ["1Z", "2026Z", "7/1/2026 12:00Z", "July 1, 2026 12:00 Z", "2026-07-01T12:00:00-05"]) {
+      const { code, err } = run([configPath, "--from", v, "--to", "now"]);
+      expect(code).toBe(2);
+      expect(err).toContain(`invalid --from value: ${JSON.stringify(v)}`);
+    }
+  });
+
   test("zoned input that is not a real date is rejected", () => {
     expect(run([configPath, "--from", "fooZ", "--to", "now"]).code).toBe(2);
     expect(run([configPath, "--from", "2026-13-45T00:00:00Z", "--to", "now"]).code).toBe(2);

@@ -70,7 +70,9 @@ function parseTime(s: string | undefined, nowMs: number, defaultDir: -1 | 1): nu
     return null;
   }
 
-  if (!/(?:[zZ]|:\d{2}(?:\.\d+)?[+-]\d{2}(?::?\d{2})?)$/.test(trimmed)) {
+  // Without an explicit zone Date.parse falls back to host-local time, and its
+  // lenient parser accepts non-ISO strings like "1Z" (2001-01-01).
+  if (!/^\d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?)?(?:[zZ]|[+-]\d{2}:?\d{2})$/.test(trimmed)) {
     return null;
   }
 
