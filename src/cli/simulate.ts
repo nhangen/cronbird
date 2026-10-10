@@ -105,13 +105,13 @@ export function runSimulateCommand(args: string[], deps: SimulateCliDeps): numbe
   const nowMs = deps.now().getTime();
   const fromMs = parseTime(parsed.fromRaw, nowMs, -1);
   if (fromMs === null) {
-    deps.err(`invalid --from value: ${JSON.stringify(parsed.fromRaw)} (use ISO timestamp with Z/offset, epoch-ms, or duration like 1h)\n`);
+    deps.err(`invalid --from value: ${JSON.stringify(parsed.fromRaw)} (use ISO timestamp with Z/offset, epoch-ms (13+ digits), or duration like 1h)\n`);
     return 2;
   }
 
   const toMs = parseTime(parsed.toRaw, nowMs, 1);
   if (toMs === null) {
-    deps.err(`invalid --to value: ${JSON.stringify(parsed.toRaw)} (use ISO timestamp with Z/offset, epoch-ms, or duration like 1h)\n`);
+    deps.err(`invalid --to value: ${JSON.stringify(parsed.toRaw)} (use ISO timestamp with Z/offset, epoch-ms (13+ digits), or duration like 1h)\n`);
     return 2;
   }
 

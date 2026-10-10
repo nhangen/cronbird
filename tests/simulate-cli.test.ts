@@ -226,10 +226,12 @@ describe("simulate CLI — time parsing", () => {
     const { code: c1, err: e1 } = run([configPath, "--from", "1782896400", "--to", "now"]);
     expect(c1).toBe(2);
     expect(e1).toContain("invalid --from value: \"1782896400\"");
+    expect(e1).toContain("epoch-ms (13+ digits)");
 
     const { code: c2, err: e2 } = run([configPath, "--from", "now", "--to", "1782896400"]);
     expect(c2).toBe(2);
     expect(e2).toContain("invalid --to value: \"1782896400\"");
+    expect(e2).toContain("epoch-ms (13+ digits)");
 
     expect(run([configPath, "--from", "0", "--to", "now"]).code).toBe(2);
     expect(run([configPath, "--from", "123456789012", "--to", "now"]).code).toBe(2);
