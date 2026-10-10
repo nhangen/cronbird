@@ -236,6 +236,29 @@ describe("simulateSchedule — core fast-forward engine", () => {
     });
     expect(overridden.dispatches).toEqual([]);
   });
+
+  test("catch-up: missed slots dispatch only at T0, not on every later tick", () => {
+    const report = simulateSchedule({
+      from: d("2026-06-01T09:00:00Z"),
+      to: d("2026-06-01T12:00:00Z"),
+      host: "ml-1",
+      jobs: [pb({ name: "eight", cronSchedule: "0 8 * * *" }), pb({ name: "hourly", cronSchedule: "0 * * * *" })],
+      enabled: new Set(["eight", "hourly"]),
+      owners: {},
+      matcher: m,
+      initialLastFired: { eight: d("2026-05-31T08:00:00Z").getTime() },
+    });
+
+    expect(report.dispatches.filter((x) => x.type === "catchup").map((x) => `${x.job}@${x.timeIso}`)).toEqual([
+      "eight@2026-06-01T09:00:00.000Z",
+    ]);
+    expect(report.dispatches.filter((x) => x.type === "due").map((x) => x.timeIso)).toEqual([
+      "2026-06-01T09:00:00.000Z",
+      "2026-06-01T10:00:00.000Z",
+      "2026-06-01T11:00:00.000Z",
+      "2026-06-01T12:00:00.000Z",
+    ]);
+  });
 });
 
 describe("simulateSchedule — skipped-job diagnostics", () => {
