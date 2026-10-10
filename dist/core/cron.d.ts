@@ -54,9 +54,10 @@ export interface JobMatcherResolver {
 /**
  * Create a matcher resolver with its own isolated per-timezone cache.
  *
- * Jobs without a `timezone` return `defaultMatcher` (or a fresh UTC matcher
- * when none is supplied). Jobs with a `timezone` get a dedicated matcher,
- * cached inside this resolver only — no module-level state is shared.
+ * Jobs without a `timezone` return `defaultMatcher` (or a host-local
+ * `createMatcher()` when none is supplied). Jobs with a `timezone` get a
+ * dedicated matcher, cached inside this resolver only — no module-level
+ * state is shared.
  */
 export declare function createJobMatcherResolver(defaultMatcher?: CronMatcher): JobMatcherResolver;
 /**

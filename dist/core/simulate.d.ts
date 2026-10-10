@@ -7,6 +7,7 @@ export interface SimulateOptions<T = unknown> {
     jobs: Job<T>[];
     enabled: Set<string>;
     owners: Record<string, string>;
+    /** Resolver for per-job matchers; takes precedence over `matcher` when provided. */
     matcherResolver?: JobMatcherResolver;
     /** Default matcher for jobs without a timezone. Shortcut for passing a resolver via `matcherResolver`. */
     matcher?: CronMatcher;
