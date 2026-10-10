@@ -260,6 +260,27 @@ describe("simulateSchedule — core fast-forward engine", () => {
     ]);
   });
 
+  test("a window starting inside the DST fall-back hour runs through with the built-in matcher", () => {
+    const report = simulateSchedule({
+      from: d("2026-11-01T06:10:00Z"),
+      to: d("2026-11-01T07:05:00Z"),
+      host: "ml-1",
+      jobs: [pb({ name: "every", cronSchedule: "* * * * *" })],
+      enabled: new Set(["every"]),
+      owners: {},
+      matcher: createMatcher({ timezone: "America/New_York" }),
+    });
+
+    expect(report.dispatches.map((x) => x.timeIso)).toEqual([
+      "2026-11-01T07:00:00.000Z",
+      "2026-11-01T07:01:00.000Z",
+      "2026-11-01T07:02:00.000Z",
+      "2026-11-01T07:03:00.000Z",
+      "2026-11-01T07:04:00.000Z",
+      "2026-11-01T07:05:00.000Z",
+    ]);
+  });
+
   test("throws instead of looping when a matcher's nextFire does not advance past the cursor", () => {
     let calls = 0;
     const stuck = {

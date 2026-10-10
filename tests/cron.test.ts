@@ -196,4 +196,15 @@ describe("DST transitions stay monotonic (no gap stall, no fall-back replay)", (
     // 2026-11-01 01:30 happens twice; croner fires at 01:30 EDT = 05:30Z (not 06:30Z EST).
     expect(ny.nextFire("30 1 * * *", d("2026-10-31T12:00:00Z"))).toEqual(d("2026-11-01T05:30:00Z"));
   });
+
+  test("fall-back: nextFire from inside the repeated hour is still strictly after `from`", () => {
+    for (let ms = d("2026-11-01T06:00:00Z").getTime(); ms < d("2026-11-01T07:00:00Z").getTime(); ms += 60_000) {
+      const from = new Date(ms);
+      const next = ny.nextFire("* * * * *", from);
+      expect(next).not.toBeNull();
+      expect(next!.getTime()).toBeGreaterThan(ms);
+    }
+    expect(ny.nextFire("* * * * *", d("2026-11-01T06:10:00Z"))).toEqual(d("2026-11-01T07:00:00Z"));
+    expect(ny.nextFire("30 1 * * *", d("2026-11-01T06:00:00Z"))).toEqual(d("2026-11-02T06:30:00Z"));
+  });
 });
