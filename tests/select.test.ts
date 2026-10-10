@@ -1,9 +1,10 @@
 import { describe, expect, test } from "bun:test";
-import { createMatcher } from "../src/core/cron";
+import { createMatcher, matcherForJob } from "../src/core/cron";
 import type { Job } from "../src/core/types";
 import { dueAt, nextWake, selectRunnable } from "../src/core/select";
 
 const m = createMatcher({ timezone: "UTC" });
+const mf = (job: Job<unknown>) => matcherForJob(job, m);
 const d = (iso: string) => new Date(iso);
 
 const pb = (over: Partial<Job<unknown>>): Job<unknown> => ({
@@ -79,16 +80,16 @@ describe("dueAt — minute-granular fire set", () => {
       pb({ name: "every15", cronSchedule: "*/15 * * * *" }),
       pb({ name: "noon", cronSchedule: "0 12 * * *" }),
     ];
-    expect(dueAt(pbs, d("2026-06-01T09:00:00Z"), m).map((p) => p.name)).toEqual(["nine", "every15"]);
+    expect(dueAt(pbs, d("2026-06-01T09:00:00Z"), mf).map((p) => p.name)).toEqual(["nine", "every15"]);
   });
 
   test("fires regardless of the seconds component (minute granularity)", () => {
-    expect(dueAt([pb({ cronSchedule: "0 9 * * *" })], d("2026-06-01T09:00:43Z"), m)).toHaveLength(1);
+    expect(dueAt([pb({ cronSchedule: "0 9 * * *" })], d("2026-06-01T09:00:43Z"), mf)).toHaveLength(1);
   });
 
   test("a job with an invalid schedule is silently skipped, not crashing the tick", () => {
     const pbs = [pb({ name: "bad", cronSchedule: "not a cron" }), pb({ name: "ok", cronSchedule: "0 9 * * *" })];
-    expect(dueAt(pbs, d("2026-06-01T09:00:00Z"), m).map((p) => p.name)).toEqual(["ok"]);
+    expect(dueAt(pbs, d("2026-06-01T09:00:00Z"), mf).map((p) => p.name)).toEqual(["ok"]);
   });
 });
 
@@ -98,28 +99,28 @@ describe("nextWake — ms until the soonest next fire, capped", () => {
   test("sleeps exactly until the soonest next-fire when under the cap", () => {
     const pbs = [pb({ cronSchedule: "*/5 * * * *" })];
     // from 12:00:00 → next */5 fire is 12:05:00 → 300_000ms, capped at 60_000.
-    expect(nextWake(pbs, d("2026-06-01T12:00:00Z"), m, CAP)).toBe(CAP);
+    expect(nextWake(pbs, d("2026-06-01T12:00:00Z"), mf, CAP)).toBe(CAP);
     // from 12:04:00 → next fire 12:05:00 → 60_000ms, exactly the cap boundary.
-    expect(nextWake(pbs, d("2026-06-01T12:04:00Z"), m, CAP)).toBe(60_000);
+    expect(nextWake(pbs, d("2026-06-01T12:04:00Z"), mf, CAP)).toBe(60_000);
     // from 12:04:30 → next fire 12:05:00 → 30_000ms, under the cap.
-    expect(nextWake(pbs, d("2026-06-01T12:04:30Z"), m, CAP)).toBe(30_000);
+    expect(nextWake(pbs, d("2026-06-01T12:04:30Z"), mf, CAP)).toBe(30_000);
   });
 
   test("takes the minimum across all jobs", () => {
     const pbs = [pb({ name: "hourly", cronSchedule: "0 * * * *" }), pb({ name: "soon", cronSchedule: "*/5 * * * *" })];
     // from 12:01:00 → hourly fires 13:00 (3540s), */5 fires 12:05 (240s) → 240_000, capped to 60_000.
-    expect(nextWake(pbs, d("2026-06-01T12:01:00Z"), m, CAP)).toBe(CAP);
+    expect(nextWake(pbs, d("2026-06-01T12:01:00Z"), mf, CAP)).toBe(CAP);
     // from 12:04:10 → */5 fires 12:05:00 → 50_000ms (< cap), wins over hourly.
-    expect(nextWake(pbs, d("2026-06-01T12:04:10Z"), m, CAP)).toBe(50_000);
+    expect(nextWake(pbs, d("2026-06-01T12:04:10Z"), mf, CAP)).toBe(50_000);
   });
 
   test("falls back to the cap when nothing is scheduled (or all never-fire)", () => {
-    expect(nextWake([], d("2026-06-01T12:00:00Z"), m, CAP)).toBe(CAP);
-    expect(nextWake([pb({ cronSchedule: "0 0 30 2 *" })], d("2026-06-01T12:00:00Z"), m, CAP)).toBe(CAP);
+    expect(nextWake([], d("2026-06-01T12:00:00Z"), mf, CAP)).toBe(CAP);
+    expect(nextWake([pb({ cronSchedule: "0 0 30 2 *" })], d("2026-06-01T12:00:00Z"), mf, CAP)).toBe(CAP);
   });
 
   test("ignores invalid schedules rather than throwing", () => {
     const pbs = [pb({ name: "bad", cronSchedule: "99 * * * *" }), pb({ name: "ok", cronSchedule: "*/5 * * * *" })];
-    expect(nextWake(pbs, d("2026-06-01T12:04:30Z"), m, CAP)).toBe(30_000);
+    expect(nextWake(pbs, d("2026-06-01T12:04:30Z"), mf, CAP)).toBe(30_000);
   });
 });

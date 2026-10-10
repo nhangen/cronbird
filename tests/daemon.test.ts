@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { lookbackForSchedule } from "../src/core/catchup";
-import { createMatcher } from "../src/core/cron";
+import { createMatcher, matcherForJob } from "../src/core/cron";
 import type { Job, Topology, Heartbeat, CompletionRecord, RunRecord } from "../src/core/types";
 import { type DaemonDeps, runForever } from "../src/core/daemon";
 import { CATCHUP_LOOKBACK_CAP_MS, CATCHUP_LOOKBACK_FLOOR_MS, FATAL_EXIT_CODE } from "../src/core/constants";
@@ -162,7 +162,7 @@ function harness(opts: HarnessOpts) {
     resolveLookback:
       opts.lookback !== undefined
         ? () => opts.lookback as number
-        : (schedule, now) => lookbackForSchedule(schedule, now, m, CATCHUP_LOOKBACK_FLOOR_MS, CATCHUP_LOOKBACK_CAP_MS),
+        : (job, now) => lookbackForSchedule(job.cronSchedule, now, matcherForJob(job, m), CATCHUP_LOOKBACK_FLOOR_MS, CATCHUP_LOOKBACK_CAP_MS),
     shouldContinue: () => i < opts.nows.length,
     priority: opts.priority ?? (() => 0),
     readCompletions: opts.readCompletions ?? (() => ({ running: {}, done: {} })),

@@ -82,12 +82,12 @@ export function computeStatus<T>(args: {
   enabled: Set<string>;
   owners: Record<string, string>;
   heartbeat: Heartbeat | null;
-  matcher: CronMatcher;
+  matcherFor: (job: Job<T>) => CronMatcher;
   now: Date;
   options: StatusOptions;
   history?: RunRecord[];
 }): StatusReport {
-  const { jobs, host, enabled, owners, heartbeat, matcher, now, options, history } = args;
+  const { jobs, host, enabled, owners, heartbeat, matcherFor, now, options, history } = args;
   const nowMs = now.getTime();
   const runnableNames = new Set(selectRunnable(jobs, host, enabled, owners).map((j) => j.name));
   const lastFiredMap = heartbeat?.last_fired ?? {};
@@ -113,7 +113,7 @@ export function computeStatus<T>(args: {
     let nextFire: number | null = null;
     if (runnable) {
       try {
-        const nf = matcher.nextFire(j.cronSchedule, now);
+        const nf = matcherFor(j).nextFire(j.cronSchedule, now);
         nextFire = nf ? nf.getTime() : null;
       } catch {
         nextFire = null;
@@ -128,7 +128,7 @@ export function computeStatus<T>(args: {
       runnable,
       lastFired,
       nextFire,
-      health: deriveHealth(j, runnable, lastFired, matcher, nowMs, options.staleGraceMs),
+      health: deriveHealth(j, runnable, lastFired, matcherFor(j), nowMs, options.staleGraceMs),
       lastRun: run,
     };
   });

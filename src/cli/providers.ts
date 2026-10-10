@@ -1,5 +1,6 @@
 import { existsSync, readFileSync } from "node:fs";
 import type { Job, Topology } from "../core/index";
+import { InvalidTimezoneError, assertValidTimezone } from "../core/index";
 
 // `ok` discriminates a CATASTROPHIC load (invalid JSON / jobs-not-array —
 // caller should reuse last-good) from a usable registry (ok:true), including a
@@ -25,9 +26,28 @@ export function parseJobsJson(text: string): { jobs: Job[]; value: Job[]; warnin
       warnings.push(`skipped ${o.name}: unknown scope "${String(o.scope)}" (expected "single" | "each")`);
       continue;
     }
+    let timezone: string | undefined;
+    if (o.timezone !== undefined) {
+      if (typeof o.timezone !== "string" || o.timezone.length === 0) {
+        warnings.push(`skipped ${o.name}: timezone must be a non-empty IANA string`);
+        continue;
+      }
+      try {
+        assertValidTimezone(o.timezone);
+        timezone = o.timezone;
+      } catch (e) {
+        if (e instanceof InvalidTimezoneError) {
+          warnings.push(`skipped ${o.name}: ${e.message}`);
+        } else {
+          throw e;
+        }
+        continue;
+      }
+    }
     jobs.push({
       name: o.name,
       cronSchedule: o.cronSchedule,
+      timezone,
       isActive: o.isActive === true,
       hosts: Array.isArray(o.hosts) && o.hosts.every((h) => typeof h === "string") && o.hosts.length > 0 ? (o.hosts as string[]) : ["*"],
       scope: o.scope === "each" ? "each" : "single",

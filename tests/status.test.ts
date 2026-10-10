@@ -1,7 +1,8 @@
 import { describe, expect, test } from "bun:test";
-import { computeStatus, createMatcher, type Heartbeat, type Job } from "../src/core/index";
+import { computeStatus, createMatcher, matcherForJob, type Heartbeat, type Job } from "../src/core/index";
 
-const matcher = createMatcher();
+const defaultMatcher = createMatcher();
+const matcherFor = (job: Job) => matcherForJob(job, defaultMatcher);
 // Fixed reference instant: 2026-07-01T12:00:00Z.
 const NOW = new Date("2026-07-01T12:00:00.000Z");
 const NOW_MS = NOW.getTime();
@@ -38,7 +39,7 @@ function hb(lastFired: Record<string, number>, ts = NOW_MS): Heartbeat {
 
 const base = {
   host: "ml-1",
-  matcher,
+  matcherFor,
   now: NOW,
   options: { staleGraceMs: 60_000, daemonHeartbeatStaleMs: 120_000 },
 };

@@ -13,7 +13,7 @@
  */
 import { catchUpFires } from "./catchup";
 import { FATAL_EXIT_CODE, MAX_ATTEMPTS, MAX_CONCURRENT } from "./constants";
-import type { CronMatcher } from "./cron";
+import { matcherForJob, type CronMatcher } from "./cron";
 import { failedJobs, isEligible, transitiveUpstreamFailed, validateDependencies } from "./dependencies";
 import { RunQueue } from "./run-queue";
 import { dueAt, nextWake, selectRunnable } from "./select";
@@ -53,15 +53,16 @@ export interface DaemonDeps<T = unknown> {
   writeHeartbeat(hb: Heartbeat): void;
   log(msg: string): void;
   host: string;
+  /** Default (host-local) matcher; per-job timezone is handled via {@link matcherForJob}. */
   matcher: CronMatcher;
   maxSleepMs: number;
   /**
-   * Catch-up look-back resolver: given a job's schedule and the current `now`,
+   * Catch-up look-back resolver: given a job and the current `now`,
    * returns how far back a missed slot may be and still replay.
    * Production passes a per-schedule derived resolver (or a fixed window when
    * the host pins a lookback override).
    */
-  resolveLookback(schedule: string, now: Date): number;
+  resolveLookback(job: Job<T>, now: Date): number;
   shouldContinue(): boolean;
   /** Product-supplied precedence; lower number = higher precedence. */
   priority(job: Job<T>): number;
@@ -248,7 +249,7 @@ export function runOneTick<T>(deps: DaemonDeps<T>, state: TickState<T>): number 
   // returns slots strictly before the current minute, so it can't already
   // overlap `due` today — but it keeps a single tick from double-dispatching a
   // job if that exclusion ever changes.
-  const due = dueAt(runnable, now, deps.matcher).filter((p) => {
+  const due = dueAt(runnable, now, (p) => matcherForJob(p, deps.matcher)).filter((p) => {
     const lastGuard = state.guard.get(p.name);
     if (lastGuard !== undefined && lastGuard >= minute) return false;
     const lastFired = state.lastFired[p.name];
@@ -256,7 +257,7 @@ export function runOneTick<T>(deps: DaemonDeps<T>, state: TickState<T>): number 
     return true;
   });
   const dueNames = new Set(due.map((p) => p.name));
-  const catches = catchUpFires(runnable, state.lastFired, now, deps.matcher, (s) => deps.resolveLookback(s, now)).filter(
+  const catches = catchUpFires(runnable, state.lastFired, now, (p) => matcherForJob(p, deps.matcher), (p) => deps.resolveLookback(p, now)).filter(
     (f) => !dueNames.has(f.job.name),
   );
 
@@ -384,7 +385,7 @@ export function runOneTick<T>(deps: DaemonDeps<T>, state: TickState<T>): number 
     }
   }
 
-  const wake = nextWake(runnable, now, deps.matcher, deps.maxSleepMs);
+  const wake = nextWake(runnable, now, (p) => matcherForJob(p, deps.matcher), deps.maxSleepMs);
 
   // SELECT the drain set up to MAX_CONCURRENT, highest priority first among the
   // dependency-eligible. `running` comes from the wrapper's `done/`+`running/`
@@ -420,8 +421,8 @@ export function runOneTick<T>(deps: DaemonDeps<T>, state: TickState<T>): number 
     // they default to `now` and are never stale. Eviction removes and continues,
     // so it never wedges the chain — the next eligible entry is picked.
     const slotTs = state.slotTsByName[candidate.name] ?? now.getTime();
-    const schedule = jobByName.get(candidate.name)?.cronSchedule ?? "";
-    if (now.getTime() - slotTs > deps.resolveLookback(schedule, now)) {
+    const job = jobByName.get(candidate.name);
+    if (job && now.getTime() - slotTs > deps.resolveLookback(job, now)) {
       state.queue.remove(candidate.name);
       delete state.slotTsByName[candidate.name];
       deps.log(`evicted stale slot ${candidate.name} (age ${now.getTime() - slotTs}ms)`);

@@ -5,7 +5,7 @@
  * projection of {@link computeStatus}. No scheduling, no writes.
  */
 import { existsSync, readFileSync } from "node:fs";
-import { computeStatus, createMatcher, explainJob, queryRunHistory, STALE_EXIT_CODE, type ExplainReport, type Heartbeat, type Job, type JobStatus, type RunRecord, type StatusReport } from "../core/index";
+import { computeStatus, createMatcher, matcherForJob, explainJob, queryRunHistory, STALE_EXIT_CODE, type ExplainReport, type Heartbeat, type Job, type JobStatus, type RunRecord, type StatusReport } from "../core/index";
 import { parseConfig, type CronbirdConfig } from "./config";
 import { readHeartbeatFile } from "./heartbeat-file";
 import { readRunHistoryFile } from "./history-file";
@@ -160,7 +160,11 @@ export function runStatusCommand(sub: StatusSubcommand, args: string[], deps: St
         enabled: inputs.enabled,
         owners: inputs.owners,
         heartbeat: inputs.heartbeat,
-        matcher: createMatcher(),
+        matcher: (() => {
+          const m = createMatcher();
+          const job = inputs.jobs.find((j) => j.name === jobName);
+          return job ? matcherForJob(job, m) : m;
+        })(),
         now: deps.now(),
         options: { count: parsed.count ?? 5 },
         history: inputs.history,
@@ -181,13 +185,14 @@ export function runStatusCommand(sub: StatusSubcommand, args: string[], deps: St
   try {
     const cfg = parseConfig(readFileSync(configPath, "utf8"), deps.env);
     const inputs = loadInputs(cfg, deps);
+    const defaultMatcher = createMatcher();
     report = computeStatus({
       jobs: inputs.jobs,
       host: cfg.hostname,
       enabled: inputs.enabled,
       owners: inputs.owners,
       heartbeat: inputs.heartbeat,
-      matcher: createMatcher(),
+      matcherFor: (job) => matcherForJob(job, defaultMatcher),
       now: deps.now(),
       // Above the wake cap so a just-woken daemon isn't flagged stale — for both
       // per-job staleness and the daemon's own heartbeat.

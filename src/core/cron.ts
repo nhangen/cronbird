@@ -1,4 +1,5 @@
 import { Cron } from "croner";
+import type { Job } from "./types";
 
 /**
  * Cron next-fire matcher for the cronbird scheduler daemon.
@@ -15,6 +16,18 @@ export class CronExpressionError extends Error {
     const detail = cause instanceof Error ? ` (${cause.message})` : "";
     super(`invalid cron expression: ${JSON.stringify(expr)}${detail}`);
     this.name = "CronExpressionError";
+  }
+}
+
+/** Thrown when a schedule's timezone (per-job or matcher-level) is not a valid
+ *  IANA identifier. Distinct from {@link CronExpressionError}: the cron
+ *  expression itself may be perfectly valid — the fault is the zone, and the
+ *  caller (e.g. the registry loader) should report it as such. */
+export class InvalidTimezoneError extends Error {
+  constructor(timezone: string, cause?: unknown) {
+    const detail = cause instanceof Error ? ` (${cause.message})` : "";
+    super(`invalid timezone: ${JSON.stringify(timezone)}${detail} (expected an IANA identifier like "America/New_York")`);
+    this.name = "InvalidTimezoneError";
   }
 }
 
@@ -67,6 +80,50 @@ class CronerMatcher implements CronMatcher {
   }
 }
 
+/**
+ * Validate an IANA timezone identifier without side effects.
+ *
+ * croner lazily resolves the zone inside {@link Cron.nextRun}, so an unknown
+ * zone only throws at query time — far from the registry parse where the
+ * operator can actually act on it. This check runs the same resolution croner
+ * uses, at parse time: a bad zone is a load-time skip, not a runtime failure.
+ */
+export function assertValidTimezone(timezone: string): void {
+  let cron: Cron;
+  try {
+    cron = new Cron("* * * * *", { timezone, legacyMode: true });
+  } catch (cause) {
+    throw new InvalidTimezoneError(timezone, cause);
+  }
+  // Force croner's lazy zone resolution now: a zone that exists in Intl but
+  // fails at run time (e.g. an exotic abbreviation) must not survive parsing.
+  try {
+    cron.nextRun(new Date(0));
+  } catch (cause) {
+    throw new InvalidTimezoneError(timezone, cause);
+  }
+}
+
 export function createMatcher(opts: MatcherOptions = {}): CronMatcher {
+  if (opts.timezone !== undefined) assertValidTimezone(opts.timezone);
   return new CronerMatcher(opts);
+}
+
+/**
+ * Return the correct {@link CronMatcher} for a job, honouring its
+ * `timezone` field. Jobs without a `timezone` fall through to
+ * `defaultMatcher` (typically a host-local `createMatcher()`).
+ *
+ * Matchers are cached per timezone string so repeated calls for jobs that
+ * share a zone do not re-validate or re-allocate.
+ */
+const matcherCache = new Map<string, CronMatcher>();
+
+export function matcherForJob(job: Job, defaultMatcher: CronMatcher): CronMatcher {
+  if (!job.timezone) return defaultMatcher;
+  const cached = matcherCache.get(job.timezone);
+  if (cached) return cached;
+  const m = createMatcher({ timezone: job.timezone });
+  matcherCache.set(job.timezone, m);
+  return m;
 }

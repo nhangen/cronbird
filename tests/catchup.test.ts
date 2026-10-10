@@ -1,9 +1,10 @@
 import { describe, expect, test } from "bun:test";
 import { catchUpFires, lookbackForSchedule, newestMissedSlot } from "../src/core/catchup";
-import { createMatcher } from "../src/core/cron";
+import { createMatcher, matcherForJob } from "../src/core/cron";
 import type { Job } from "../src/core/types";
 
 const m = createMatcher({ timezone: "UTC" });
+const mf = (job: Job<unknown>) => matcherForJob(job, m);
 const d = (iso: string) => new Date(iso);
 const ms = (iso: string) => d(iso).getTime();
 const HOUR = 3_600_000;
@@ -120,12 +121,12 @@ describe("lookbackForSchedule", () => {
 });
 
 describe("catchUpFires", () => {
-  const fixedHour = () => HOUR;
+  const fixedHour = (_job: Job<unknown>) => HOUR;
 
   test("includes jobs with a missed slot, excludes those without a last_fired baseline", () => {
     const pbs = [pb({ name: "seen" }), pb({ name: "fresh" })];
     const lastFired = { seen: ms("2026-06-01T09:00:00Z") }; // 'fresh' has no baseline yet
-    const fires = catchUpFires(pbs, lastFired, d("2026-06-01T09:17:30Z"), m, fixedHour);
+    const fires = catchUpFires(pbs, lastFired, d("2026-06-01T09:17:30Z"), mf, fixedHour);
     expect(fires.map((f) => f.job.name)).toEqual(["seen"]);
     expect(fires[0]!.slot).toEqual(d("2026-06-01T09:15:00Z"));
   });
@@ -133,18 +134,18 @@ describe("catchUpFires", () => {
   test("excludes a job with no gap", () => {
     const pbs = [pb({ name: "current" })];
     const lastFired = { current: ms("2026-06-01T09:15:00Z") };
-    expect(catchUpFires(pbs, lastFired, d("2026-06-01T09:17:30Z"), m, fixedHour)).toEqual([]);
+    expect(catchUpFires(pbs, lastFired, d("2026-06-01T09:17:30Z"), mf, fixedHour)).toEqual([]);
   });
 
   test("resolver is applied per schedule: a 3h-stale daily slot catches up (derived ~6h) where a fixed 1h would skip", () => {
     const daily = pb({ name: "daily", cronSchedule: "0 9 * * *" });
     const lastFired = { daily: ms("2026-05-31T09:00:00Z") }; // yesterday 09:00
     const now = d("2026-06-01T12:00:00Z"); // 3h after today's 09:00 slot
-    const derived = (s: string) => lookbackForSchedule(s, now, m, FLOOR, CAP);
-    expect(catchUpFires([daily], lastFired, now, m, derived).map((f) => f.slot)).toEqual([
+    const derived = (job: Job<unknown>) => lookbackForSchedule(job.cronSchedule, now, mf(job), FLOOR, CAP);
+    expect(catchUpFires([daily], lastFired, now, mf, derived).map((f) => f.slot)).toEqual([
       d("2026-06-01T09:00:00Z"),
     ]);
     // The same slot is 3h stale → a fixed 1h look-back drops it.
-    expect(catchUpFires([daily], lastFired, now, m, fixedHour)).toEqual([]);
+    expect(catchUpFires([daily], lastFired, now, mf, fixedHour)).toEqual([]);
   });
 });

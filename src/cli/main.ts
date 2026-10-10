@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 import { readFileSync } from "node:fs";
-import { createMatcher, lookbackForSchedule, runForever, FATAL_EXIT_CODE, type DaemonDeps } from "../core/index";
+import { createMatcher, matcherForJob, lookbackForSchedule, runForever, FATAL_EXIT_CODE, type DaemonDeps, type Job } from "../core/index";
 import { parseConfig } from "./config";
 import { fileJobProvider, fileEnabledProvider, fileTopologyProvider } from "./providers";
 import { ShellDispatcher } from "./shell-dispatcher";
@@ -107,7 +107,7 @@ async function main(): Promise<void> {
     host: cfg.hostname,
     matcher,
     maxSleepMs: cfg.maxSleepMs,
-    resolveLookback: (schedule, now) => lookbackForSchedule(schedule, now, matcher, cfg.catchupLookbackFloorMs, cfg.catchupLookbackCapMs),
+    resolveLookback: (job, now) => lookbackForSchedule(job.cronSchedule, now, matcherForJob(job, matcher), cfg.catchupLookbackFloorMs, cfg.catchupLookbackCapMs),
     shouldContinue: () => running,
     // Product precedence resolver. No priority source is wired yet, so all jobs
     // share precedence 0 (FIFO) — identical ordering to the pre-queue dispatch.
