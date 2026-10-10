@@ -11,6 +11,8 @@ import { readHeartbeatFile } from "./heartbeat-file";
 import { readRunHistoryFile } from "./history-file";
 import { fileEnabledProvider, fileJobProvider, fileTopologyProvider } from "./providers";
 
+const MAX_EXPLAIN_COUNT = 1000;
+
 export type StatusSubcommand = "status" | "list" | "next-runs" | "history" | "explain";
 
 export const STATUS_SUBCOMMANDS: ReadonlySet<string> = new Set(["status", "list", "next-runs", "history", "explain"]);
@@ -333,9 +335,9 @@ function parseFlags(sub: StatusSubcommand, args: string[], deps: StatusCliDeps):
         return 2;
       }
       const val = args[++i];
-      const n = Number(val);
-      if (!Number.isInteger(n) || n < 0) {
-        deps.err(`invalid --count: ${JSON.stringify(val)} (must be a non-negative integer)\n`);
+      const n = val === undefined || val.trim() === "" ? NaN : Number(val);
+      if (!Number.isInteger(n) || n < 0 || n > MAX_EXPLAIN_COUNT) {
+        deps.err(`invalid --count: ${JSON.stringify(val)} (must be an integer from 0 to ${MAX_EXPLAIN_COUNT})\n`);
         return 2;
       }
       count = n;
@@ -487,7 +489,9 @@ function renderExplain(report: ExplainReport, parsed: ParsedArgs, deps: StatusCl
   const nowMs = report.now;
   const lastFired = report.lastFired === null ? "-" : fmtRelative(report.lastFired - nowMs);
   deps.out(`last fired: ${lastFired}\n`);
-  if (report.nextFires.length === 0) {
+  if (parsed.count === 0) {
+    deps.out(`next fires: (not requested — --count 0)\n`);
+  } else if (report.nextFires.length === 0) {
     deps.out(`next fires: (none — not runnable, schedule invalid, or never fires again)\n`);
   } else {
     const fireRows: string[][] = [["#", "NEXT FIRE", "IN"]];

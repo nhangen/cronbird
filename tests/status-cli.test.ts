@@ -721,9 +721,29 @@ describe("explain", () => {
   });
 
   test("invalid --count → exit 2", () => {
-    const { code, err } = run("explain", ["alpha", "--count", "banana"]);
+    for (const bad of ["banana", "-1", "1.5", "", "  ", "1001"]) {
+      const { code, err } = run("explain", ["alpha", "--count", bad]);
+      expect(code).toBe(2);
+      expect(err).toContain("invalid --count");
+    }
+    const { code: missingCode, err: missingErr } = run("explain", ["alpha", "--count"]);
+    expect(missingCode).toBe(2);
+    expect(missingErr).toContain("invalid --count");
+  });
+
+  test("--count 1000 is accepted", () => {
+    expect(run("explain", ["alpha", "--count", "1000", "--json"]).code).toBe(0);
+  });
+
+  test("--count on another subcommand → exit 2", () => {
+    const { code, err } = run("status", ["--count", "3"]);
     expect(code).toBe(2);
-    expect(err).toContain("--count");
+    expect(err).toContain("--count is only valid for explain");
+  });
+
+  test("--count 0 says next fires were not requested", () => {
+    const { out } = run("explain", ["alpha", "--count", "0"]);
+    expect(out).toContain("next fires: (not requested — --count 0)");
   });
 
   test("reversed argument order: <job> <config.json> → exit 0, runs explain", () => {
