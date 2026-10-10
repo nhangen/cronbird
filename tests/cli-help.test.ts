@@ -14,7 +14,7 @@ function runCli(args: string[]) {
 describe("usageText", () => {
   test("lists every subcommand and the daemon mode", () => {
     const u = usageText();
-    for (const token of ["cronbird <config.json>", "list", "next-runs", "status", "help", "--within"]) {
+    for (const token of ["cronbird <config.json>", "list", "next-runs", "status", "simulate", "help", "--within", "--from"]) {
       expect(u).toContain(token);
     }
   });

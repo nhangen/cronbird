@@ -1,0 +1,194 @@
+/**
+ * Pure simulation / dry-run schedule execution for cronbird.
+ *
+ * Fast-forwards the schedule across `[from, to]` using the pure decision functions
+ * (selectRunnable, dueAt, catchUpFires, matcher.nextFire via nextWake).
+ * Dispatches nothing and persists no state.
+ */
+import { catchUpFires, lookbackForSchedule } from "./catchup";
+import { CATCHUP_LOOKBACK_CAP_MS, CATCHUP_LOOKBACK_FLOOR_MS } from "./constants";
+import { createMatcher, type CronMatcher } from "./cron";
+import { validateDependencies } from "./dependencies";
+import { dueAt, nextWake, selectRunnable } from "./select";
+import type { Heartbeat, Job } from "./types";
+
+export interface SimulateOptions<T = unknown> {
+  from: Date;
+  to: Date;
+  host: string;
+  jobs: Job<T>[];
+  enabled: Set<string>;
+  owners: Record<string, string>;
+  matcher?: CronMatcher;
+  initialHeartbeat?: Heartbeat | null;
+  initialLastFired?: Record<string, number>;
+  resolveLookback?: (schedule: string, now: Date) => number;
+  priority?: (job: Job<T>) => number;
+  dependencies?: (job: Job<T>) => string[];
+}
+
+export interface SimulatedDispatch {
+  job: string;
+  time: number;
+  timeIso: string;
+  slotTs: number;
+  type: "due" | "catchup";
+}
+
+export interface SimulationReport {
+  host: string;
+  from: number;
+  fromIso: string;
+  to: number;
+  toIso: string;
+  dispatches: SimulatedDispatch[];
+  warnings: string[];
+}
+
+export function simulateSchedule<T = unknown>(options: SimulateOptions<T>): SimulationReport {
+  const fromMs = options.from.getTime();
+  const toMs = options.to.getTime();
+
+  if (fromMs > toMs) {
+    throw new RangeError("from must be before or equal to to");
+  }
+
+  const matcher = options.matcher ?? createMatcher();
+  const priority = options.priority ?? (() => 0);
+  const upstreamsOf = (n: string): string[] => {
+    const job = options.jobs.find((x) => x.name === n);
+    return job ? (options.dependencies?.(job) ?? []) : [];
+  };
+
+  const selected = selectRunnable(options.jobs, options.host, options.enabled, options.owners);
+  const { invalid, warnings: depWarnings } = validateDependencies(options.jobs, upstreamsOf);
+  const runnable = invalid.size ? selected.filter((j) => !invalid.has(j.name)) : selected;
+
+  const warnings = [...depWarnings];
+  const dispatches: SimulatedDispatch[] = [];
+
+  if (runnable.length === 0) {
+    return {
+      host: options.host,
+      from: fromMs,
+      fromIso: options.from.toISOString(),
+      to: toMs,
+      toIso: options.to.toISOString(),
+      dispatches,
+      warnings,
+    };
+  }
+
+  const resolveLookback =
+    options.resolveLookback ??
+    ((schedule, now) =>
+      lookbackForSchedule(schedule, now, matcher, CATCHUP_LOOKBACK_FLOOR_MS, CATCHUP_LOOKBACK_CAP_MS));
+
+  // Seed lastFired if provided (from initialHeartbeat or explicit initialLastFired)
+  const lastFired: Record<string, number> = {
+    ...(options.initialHeartbeat?.last_fired ?? {}),
+    ...(options.initialLastFired ?? {}),
+  };
+
+  // Align starting minute: first slot is at or after fromMs
+  const startMinuteMs = Math.ceil(fromMs / 60_000) * 60_000;
+  if (startMinuteMs > toMs) {
+    return {
+      host: options.host,
+      from: fromMs,
+      fromIso: options.from.toISOString(),
+      to: toMs,
+      toIso: options.to.toISOString(),
+      dispatches,
+      warnings,
+    };
+  }
+
+  let cursor = new Date(startMinuteMs);
+  let isFirstTick = true;
+
+  while (cursor.getTime() <= toMs) {
+    const currentMs = cursor.getTime();
+    const minute = Math.floor(currentMs / 60_000);
+    const minuteStart = minute * 60_000;
+
+    const due = dueAt(runnable, cursor, matcher);
+    const dueNames = new Set(due.map((j) => j.name));
+
+    // Catch-up fires only run on the first tick if an initial lastFired baseline was provided
+    let catches: { job: Job<T>; slot: Date }[] = [];
+    if (isFirstTick && Object.keys(lastFired).length > 0) {
+      catches = catchUpFires(runnable, lastFired, cursor, matcher, (s) => resolveLookback(s, cursor)).filter(
+        (f) => !dueNames.has(f.job.name),
+      );
+    }
+    isFirstTick = false;
+
+    // First-seen jobs baseline initializes to cursor
+    for (const j of runnable) {
+      if (lastFired[j.name] === undefined) {
+        lastFired[j.name] = currentMs;
+      }
+    }
+
+    const batch: SimulatedDispatch[] = [];
+
+    for (const j of due) {
+      batch.push({
+        job: j.name,
+        time: minuteStart,
+        timeIso: new Date(minuteStart).toISOString(),
+        slotTs: minuteStart,
+        type: "due",
+      });
+      lastFired[j.name] = Math.max(lastFired[j.name] ?? 0, minuteStart);
+    }
+
+    for (const f of catches) {
+      const slotMs = f.slot.getTime();
+      batch.push({
+        job: f.job.name,
+        time: currentMs,
+        timeIso: cursor.toISOString(),
+        slotTs: slotMs,
+        type: "catchup",
+      });
+      lastFired[f.job.name] = Math.max(lastFired[f.job.name] ?? 0, slotMs);
+    }
+
+    // Sort by priority (lower number = higher precedence), then job name for deterministic order
+    batch.sort((a, b) => {
+      const jobA = runnable.find((x) => x.name === a.job)!;
+      const jobB = runnable.find((x) => x.name === b.job)!;
+      const prioDiff = priority(jobA) - priority(jobB);
+      if (prioDiff !== 0) return prioDiff;
+      return a.job.localeCompare(b.job);
+    });
+
+    for (const item of batch) {
+      dispatches.push(item);
+    }
+
+    // Advance to the soonest next fire across all runnable jobs
+    const wake = nextWake(runnable, cursor, matcher, Infinity);
+    if (wake === Infinity || wake <= 0) {
+      break;
+    }
+
+    const nextMs = cursor.getTime() + wake;
+    if (nextMs > toMs) {
+      break;
+    }
+    cursor = new Date(nextMs);
+  }
+
+  return {
+    host: options.host,
+    from: fromMs,
+    fromIso: options.from.toISOString(),
+    to: toMs,
+    toIso: options.to.toISOString(),
+    dispatches,
+    warnings,
+  };
+}

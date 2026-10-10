@@ -149,9 +149,10 @@ cronbird list      <config.json>              # every job: schedule, scope, acti
 cronbird next-runs <config.json> [--within 2h] # runnable jobs sorted by next fire (optional window)
 cronbird status    <config.json>              # per-job health + daemon heartbeat age
 cronbird history   <config.json> [options]    # query execution run history (job, since, until, limit)
+cronbird simulate  <config.json> --from <T0> --to <T1> # dry-run / fast-forward the schedule
 ```
 
-All four accept `--json` for machine-readable output. `cronbird help` (or `--help` / `-h`) prints this list; running `cronbird <config.json>` with no subcommand starts the daemon as before.
+All five accept `--json` for machine-readable output. `cronbird help` (or `--help` / `-h`) prints this list; running `cronbird <config.json>` with no subcommand starts the daemon as before.
 
 `status` classifies each job's `HEALTH`:
 
@@ -209,6 +210,31 @@ hourly-ping   2026-10-09T06:00:00.000Z  1m ago   0.2s      success  0
 hourly-ping   2026-10-09T05:00:00.000Z  1h ago   0.2s      success  0
 hourly-ping   2026-10-09T04:00:00.000Z  2h ago   0.2s      success  0
 nightly-sync  2026-10-09T02:00:00.000Z  4h ago   45.1s     failure  1
+```
+
+### Schedule simulation (dry-run)
+
+`cronbird simulate <config.json> --from <time> --to <time>` fast-forwards the schedule across `[T0, T1]` without wall-clock wait:
+
+- Dispatches nothing and persists no state.
+- Wires the real file providers (`enabledPath`, `topologyPath`, `registryPath`), answering "what will this configuration actually do?" and exposing configuration issues (such as `enabledPath: null`) immediately.
+- Prints the would-dispatch schedule in order of fire time.
+
+```bash
+cronbird simulate ./cronbird.config.json --from 2026-07-01T00:00:00Z --to 2026-07-02T00:00:00Z
+cronbird simulate ./cronbird.config.json --from now --to +24h
+cronbird simulate ./cronbird.config.json --from 2026-07-01T00:00:00Z --to 2026-07-01T12:00:00Z --json
+```
+
+Example:
+
+```
+$ cronbird simulate ./cronbird.config.json --from 2026-07-01T00:00:00Z --to 2026-07-01T03:00:00Z
+TIME                      JOB
+2026-07-01T00:00:00.000Z  hourly-ping
+2026-07-01T01:00:00.000Z  hourly-ping
+2026-07-01T02:00:00.000Z  hourly-ping
+2026-07-01T03:00:00.000Z  hourly-ping
 ```
 
 ## Deploy

@@ -17,6 +17,8 @@ export function usageText(): string {
     "  cronbird status <config.json> [--json]         per-job health + daemon heartbeat age",
     "  cronbird history <config.json> [--json] [--job <name>] [--since <time>] [--until <time>] [--limit <n>]",
     "                                                 query structured run-history log",
+    "  cronbird simulate <config.json> --from <time> --to <time> [--json]",
+    "                                                 dry-run / simulate dispatch schedule",
     "  cronbird help                                  show this help",
     "",
     "  <dur> is Nd / Nh / Nm / Ns (e.g. 30m, 2h, 1d).",

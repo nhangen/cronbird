@@ -7,6 +7,8 @@ export { readHeartbeatFile, writeHeartbeatFile, writeSyncedHeartbeat, writeHeart
 export { appendRunRecordFile, readRunHistoryFile, writeRunHistoryFile, rotateRunHistoryFile, createFileRunHistorySink, } from "./history-file";
 export { runStatusCommand, STATUS_SUBCOMMANDS } from "./status";
 export type { StatusSubcommand, StatusCliDeps } from "./status";
+export { runSimulateCommand } from "./simulate";
+export type { SimulateCliDeps } from "./simulate";
 export { usageText, HELP_TOKENS } from "./usage";
 export { acquireFlock } from "./flock";
 export type { FlockHandle } from "./flock";

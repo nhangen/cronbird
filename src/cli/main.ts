@@ -7,6 +7,7 @@ import { ShellDispatcher } from "./shell-dispatcher";
 import { readHeartbeatFile, writeHeartbeatFile, writeSyncedHeartbeat, writeHeartbeatWithSync, PermanentHeartbeatWriteError } from "./heartbeat-file";
 import { createFileRunHistorySink, rotateRunHistoryFile } from "./history-file";
 import { runStatusCommand, STATUS_SUBCOMMANDS, type StatusSubcommand } from "./status";
+import { runSimulateCommand } from "./simulate";
 import { acquireFlock } from "./flock";
 import { HELP_TOKENS, usageText } from "./usage";
 import { createSurfacer } from "./warn-dedup";
@@ -28,10 +29,19 @@ async function main(): Promise<void> {
     process.exit(2);
   }
 
-  // Read-only subcommands (status/list/next-runs) route before the daemon.
+  // Read-only subcommands (status/list/next-runs/history/simulate) route before the daemon.
   // With no subcommand, argv[2] is the config path and the daemon runs — the
   // launchd/systemd entrypoint (`cronbird <config>`) is unchanged.
   const sub = first;
+  if (sub === "simulate") {
+    const code = runSimulateCommand(process.argv.slice(3), {
+      now: () => new Date(),
+      out: (s) => process.stdout.write(s),
+      err: (s) => process.stderr.write(s),
+      env: process.env,
+    });
+    process.exit(code);
+  }
   if (sub && STATUS_SUBCOMMANDS.has(sub)) {
     const code = runStatusCommand(sub as StatusSubcommand, process.argv.slice(3), {
       now: () => new Date(),
