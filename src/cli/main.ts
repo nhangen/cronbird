@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 import { readFileSync } from "node:fs";
-import { createMatcher, matcherForJob, lookbackForSchedule, runForever, FATAL_EXIT_CODE, type DaemonDeps } from "../core/index";
+import { createMatcher, createJobMatcherResolver, lookbackForSchedule, runForever, FATAL_EXIT_CODE, type DaemonDeps } from "../core/index";
 import { parseConfig } from "./config";
 import { fileJobProvider, fileEnabledProvider, fileTopologyProvider } from "./providers";
 import { ShellDispatcher } from "./shell-dispatcher";
@@ -82,6 +82,7 @@ async function main(): Promise<void> {
   process.on("exit", () => lockHandle?.release());
 
   const matcher = createMatcher();
+  const matcherResolver = createJobMatcherResolver(matcher);
   const dispatcher = new ShellDispatcher(cfg.dispatchCommand, cfg.dispatchArgsTemplate, log);
   const syncedHbPath = cfg.syncedHeartbeatDir ? `${cfg.syncedHeartbeatDir}/${cfg.hostname}.json` : null;
 
@@ -106,8 +107,9 @@ async function main(): Promise<void> {
     log,
     host: cfg.hostname,
     matcher,
+    matcherResolver,
     maxSleepMs: cfg.maxSleepMs,
-    resolveLookback: (job, now) => lookbackForSchedule(job.cronSchedule, now, matcherForJob(job, matcher), cfg.catchupLookbackFloorMs, cfg.catchupLookbackCapMs),
+    resolveLookback: (job, now) => lookbackForSchedule(job.cronSchedule, now, matcherResolver.resolve(job), cfg.catchupLookbackFloorMs, cfg.catchupLookbackCapMs),
     shouldContinue: () => running,
     // Product precedence resolver. No priority source is wired yet, so all jobs
     // share precedence 0 (FIFO) — identical ordering to the pre-queue dispatch.
