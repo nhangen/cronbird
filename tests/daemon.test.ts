@@ -995,6 +995,41 @@ describe("queued slot for a job that left the runnable set", () => {
   });
 });
 
+describe("per-job timezone through runForever", () => {
+  test("a timezoned job fires at its local time while the default-matcher job does not", async () => {
+    const h = harness({
+      nows: [d("2026-06-01T13:00:00Z")],
+      playbooks: [
+        pb({ name: "ny", cronSchedule: "0 9 * * *", timezone: "America/New_York" }),
+        pb({ name: "utc", cronSchedule: "0 9 * * *" }),
+      ],
+    });
+    await runForever(h.deps);
+    expect(h.dispatched).toEqual(["ny"]);
+  });
+
+  test("catch-up uses the job's timezone to find the missed slot", async () => {
+    const h = harness({
+      nows: [d("2026-06-01T13:30:00Z")],
+      playbooks: [pb({ name: "ny", cronSchedule: "0 9 * * *", timezone: "America/New_York" })],
+      startHeartbeat: h0Heartbeat({ last_fired: { ny: d("2026-06-01T12:00:00Z").getTime() } }),
+    });
+    await runForever(h.deps);
+    expect(h.dispatched).toEqual(["ny"]);
+    expect(h.heartbeats[0]!.last_fired.ny).toBe(d("2026-06-01T13:00:00Z").getTime());
+  });
+
+  test("next wake is computed from the job's timezone", async () => {
+    const h = harness({
+      nows: [d("2026-06-01T12:59:00Z")],
+      playbooks: [pb({ name: "ny", cronSchedule: "0 9 * * *", timezone: "America/New_York" })],
+      cap: 24 * 60 * 60_000,
+    });
+    await runForever(h.deps);
+    expect(h.sleeps).toEqual([60_000]);
+  });
+});
+
 describe("run history recording — Ticket #3", () => {
   test("dispatch records an in-flight RunRecord with slotTs and startedAt", async () => {
     const now = d("2026-06-01T09:00:00Z");
