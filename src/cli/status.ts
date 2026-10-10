@@ -4,7 +4,7 @@
  * enabled / topology / heartbeat via the existing file providers, and renders a
  * projection of {@link computeStatus}. No scheduling, no writes.
  */
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { computeStatus, createMatcher, explainJob, queryRunHistory, STALE_EXIT_CODE, type ExplainReport, type Heartbeat, type Job, type JobStatus, type RunRecord, type StatusReport } from "../core/index";
 import { parseConfig, type CronbirdConfig } from "./config";
 import { readHeartbeatFile } from "./heartbeat-file";
@@ -162,6 +162,10 @@ export function runStatusCommand(sub: StatusSubcommand, args: string[], deps: St
         now: deps.now(),
         options: { count: parsed.count ?? 5 },
         history: inputs.history,
+        sourceNotes: {
+          enabled: absentSourceNote("enabled", cfg.enabledPath),
+          topology: absentSourceNote("topology", cfg.topologyPath),
+        },
       });
     } catch (e) {
       deps.err(`error: ${e instanceof Error ? e.message : String(e)}\n`);
@@ -205,6 +209,12 @@ export function runStatusCommand(sub: StatusSubcommand, args: string[], deps: St
     return STALE_EXIT_CODE;
   }
   return 0;
+}
+
+function absentSourceNote(kind: "enabled" | "topology", path: string | null): string | undefined {
+  if (path === null) return `${kind}Path is not configured`;
+  if (!existsSync(path)) return `${kind} file not found: ${path}`;
+  return undefined;
 }
 
 interface LoadedInputs {

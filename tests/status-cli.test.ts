@@ -789,3 +789,32 @@ describe("explain — registry problems are not reported as unknown jobs", () =>
     expect(err).not.toContain("unknown job");
   });
 });
+
+describe("explain — absent sidecar files are named in the gate reason", () => {
+  test("enabled file configured but missing", () => {
+    const { out } = runWith({ registry: { jobs: [everyMinute("alpha")] }, missingEnabledFile: true }, "explain", ["alpha"]);
+    expect(out).toMatch(/NOT in this host's enabled set .* — enabled file not found: .*enabled-missing\.json/);
+  });
+
+  test("enabledPath not configured", () => {
+    const { out } = runWith({ registry: { jobs: [everyMinute("alpha")] }, enabled: null }, "explain", ["alpha"]);
+    expect(out).toContain("— enabledPath is not configured");
+  });
+
+  test("topology file configured but missing", () => {
+    const registry = { jobs: [{ ...everyMinute("solo"), scope: "single" }] };
+    const { out } = runWith({ registry, missingTopologyFile: true }, "explain", ["solo"]);
+    expect(out).toMatch(/no owner declared for this job in topology\.owners — topology file not found: .*topology-missing\.json/);
+  });
+
+  test("topologyPath not configured", () => {
+    const registry = { jobs: [{ ...everyMinute("solo"), scope: "single" }] };
+    const { out } = runWith({ registry }, "explain", ["solo"]);
+    expect(out).toContain("— topologyPath is not configured");
+  });
+
+  test("present files add no note", () => {
+    const { out } = runWith({ registry: { jobs: [everyMinute("alpha")] }, enabled: [] }, "explain", ["alpha"]);
+    expect(out).toContain(`NOT in this host's enabled set ("ml-1")\n`);
+  });
+});

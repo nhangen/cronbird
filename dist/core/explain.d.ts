@@ -53,6 +53,13 @@ export interface ExplainOptions {
     /** How many upcoming fires to include (default 5). */
     count?: number;
 }
+/** Why the enabled set or topology owners are empty when the source file was
+ *  never read (e.g. "enabledPath is not configured"). Appended to the failing
+ *  gate's reason so a misconfigured path isn't mistaken for a missing entry. */
+export interface ExplainSourceNotes {
+    enabled?: string;
+    topology?: string;
+}
 /**
  * Explain why `name` is or isn't runnable on `host`, and when it next fires.
  *
@@ -82,4 +89,5 @@ export declare function explainJob<T>(args: {
     now: Date;
     options?: ExplainOptions;
     history?: RunRecord[];
+    sourceNotes?: ExplainSourceNotes;
 }): ExplainReport;

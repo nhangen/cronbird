@@ -59,6 +59,14 @@ export interface ExplainOptions {
   count?: number;
 }
 
+/** Why the enabled set or topology owners are empty when the source file was
+ *  never read (e.g. "enabledPath is not configured"). Appended to the failing
+ *  gate's reason so a misconfigured path isn't mistaken for a missing entry. */
+export interface ExplainSourceNotes {
+  enabled?: string;
+  topology?: string;
+}
+
 /**
  * Explain why `name` is or isn't runnable on `host`, and when it next fires.
  *
@@ -88,8 +96,11 @@ export function explainJob<T>(args: {
   now: Date;
   options?: ExplainOptions;
   history?: RunRecord[];
+  sourceNotes?: ExplainSourceNotes;
 }): ExplainReport {
-  const { jobs, name, host, enabled, owners, heartbeat, matcher, now, options, history } = args;
+  const { jobs, name, host, enabled, owners, heartbeat, matcher, now, options, history, sourceNotes } = args;
+  const enabledNote = sourceNotes?.enabled ? ` — ${sourceNotes.enabled}` : "";
+  const topologyNote = sourceNotes?.topology ? ` — ${sourceNotes.topology}` : "";
   const job = jobs.find((j) => j.name === name);
   if (!job) {
     throw new Error(`unknown job: ${JSON.stringify(name)} (not in registry)`);
@@ -117,11 +128,11 @@ export function explainJob<T>(args: {
   const enabledGate: ExplainGate =
     enabled.has(job.name)
       ? { gate: "enabled-membership", passed: true, reason: `job is in this host's enabled set (${JSON.stringify(host)})` }
-      : { gate: "enabled-membership", passed: false, reason: `job is NOT in this host's enabled set (${JSON.stringify(host)})` };
+      : { gate: "enabled-membership", passed: false, reason: `job is NOT in this host's enabled set (${JSON.stringify(host)})${enabledNote}` };
   const ownerGate: ExplainGate = (() => {
     const owner = owners[job.name];
     if (owner === undefined) {
-      return { gate: "owner-match", passed: false, reason: `no owner declared for this job in topology.owners` };
+      return { gate: "owner-match", passed: false, reason: `no owner declared for this job in topology.owners${topologyNote}` };
     }
     return owner === host
       ? { gate: "owner-match", passed: true, reason: `owner is ${JSON.stringify(owner)} (this host)` }
