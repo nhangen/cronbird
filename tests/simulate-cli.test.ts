@@ -18,6 +18,8 @@ const quickstartConfigPath = join(dir, "quickstart-config.json");
 const missingRegistryConfigPath = join(dir, "missing-registry-config.json");
 const corruptEnabledPath = join(dir, "corrupt-enabled.json");
 const corruptEnabledConfigPath = join(dir, "corrupt-enabled-config.json");
+const corruptTopologyPath = join(dir, "corrupt-topology.json");
+const corruptTopologyConfigPath = join(dir, "corrupt-topology-config.json");
 
 function writeConfig(path: string, over: Record<string, unknown>): void {
   writeFileSync(
@@ -85,6 +87,8 @@ beforeAll(() => {
   writeConfig(missingRegistryConfigPath, { registryPath: join(dir, "no-such-registry.json") });
   writeFileSync(corruptEnabledPath, "nope");
   writeConfig(corruptEnabledConfigPath, { enabledPath: corruptEnabledPath });
+  writeFileSync(corruptTopologyPath, "{");
+  writeConfig(corruptTopologyConfigPath, { topologyPath: corruptTopologyPath });
 
   // Quickstart config reproducing #10 (enabledPath: null, topologyPath: null)
   writeFileSync(
@@ -233,6 +237,14 @@ describe("simulate CLI — load failures", () => {
     expect(code).toBe(1);
     expect(out).toBe("");
     expect(err).toContain("warning: enabled file present but unparseable");
+    expect(err).toContain("config error:");
+  });
+
+  test("present-but-unparseable topology file exits 1", () => {
+    const { code, out, err } = run([corruptTopologyConfigPath, "--from", "now", "--to", "+2h"]);
+    expect(code).toBe(1);
+    expect(out).toBe("");
+    expect(err).toContain("warning: topology file present but unparseable");
     expect(err).toContain("config error:");
   });
 });
