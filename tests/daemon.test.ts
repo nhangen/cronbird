@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { lookbackForSchedule } from "../src/core/catchup";
-import { createMatcher } from "../src/core/cron";
+import { createMatcher, matcherForJob } from "../src/core/cron";
 import type { Job, Topology, Heartbeat, CompletionRecord, RunRecord } from "../src/core/types";
 import { type DaemonDeps, runForever } from "../src/core/daemon";
 import { CATCHUP_LOOKBACK_CAP_MS, CATCHUP_LOOKBACK_FLOOR_MS, FATAL_EXIT_CODE } from "../src/core/constants";
@@ -162,7 +162,7 @@ function harness(opts: HarnessOpts) {
     resolveLookback:
       opts.lookback !== undefined
         ? () => opts.lookback as number
-        : (schedule, now) => lookbackForSchedule(schedule, now, m, CATCHUP_LOOKBACK_FLOOR_MS, CATCHUP_LOOKBACK_CAP_MS),
+        : (job, now) => lookbackForSchedule(job.cronSchedule, now, matcherForJob(job, m), CATCHUP_LOOKBACK_FLOOR_MS, CATCHUP_LOOKBACK_CAP_MS),
     shouldContinue: () => i < opts.nows.length,
     priority: opts.priority ?? (() => 0),
     readCompletions: opts.readCompletions ?? (() => ({ running: {}, done: {} })),
@@ -960,6 +960,93 @@ describe("staleness eviction — Task E", () => {
     });
     await runForever(h.deps);
     expect(h.dispatched).toEqual(["fresh"]);
+  });
+});
+
+describe("queued slot for a job that left the runnable set", () => {
+  test("a stale slot for a deactivated job is evicted, not dispatched", async () => {
+    const now = d("2026-07-07T19:00:00Z");
+    const staleTs = d("2026-07-07T09:00:00Z").getTime();
+    const hb = h0Heartbeat({ queue: [{ name: "gone", priority: 1, slotTs: staleTs }] });
+    const h = harness({
+      nows: [now],
+      playbooks: [pb({ name: "gone", cronSchedule: "0 9 * * *", isActive: false })],
+      startHeartbeat: hb,
+      readCompletions: () => ({ running: {}, done: {} }),
+    });
+    await runForever(h.deps);
+    expect(h.dispatched).toEqual([]);
+    expect(h.logs.some((l) => l.includes("evicted stale slot gone"))).toBe(true);
+    expect((h.heartbeats.at(-1)!.queue ?? []).some((e) => e.name === "gone")).toBe(false);
+  });
+
+  test("a slot for a job removed from the registry is dropped", async () => {
+    const now = d("2026-07-07T09:00:30Z");
+    const hb = h0Heartbeat({ queue: [{ name: "removed", priority: 1, slotTs: d("2026-07-07T09:00:00Z").getTime() }] });
+    const h = harness({
+      nows: [now],
+      playbooks: [pb({ name: "other", cronSchedule: "0 10 * * *" })],
+      startHeartbeat: hb,
+      readCompletions: () => ({ running: {}, done: {} }),
+    });
+    await runForever(h.deps);
+    expect(h.dispatched).toEqual([]);
+    expect(h.logs.some((l) => l.includes("dropped queued slot removed"))).toBe(true);
+  });
+
+  test("a torn enabled read does not drop fresh queued slots", async () => {
+    const slotTs = d("2026-07-07T09:00:00Z").getTime();
+    const hb = h0Heartbeat({
+      queue: [
+        { name: "a", priority: 1, slotTs },
+        { name: "b", priority: 1, slotTs },
+      ],
+    });
+    const h = harness({
+      nows: [d("2026-07-07T09:00:30Z"), d("2026-07-07T09:01:00Z"), d("2026-07-07T09:01:30Z")],
+      playbooks: [pb({ name: "a", cronSchedule: "0 10 * * *" }), pb({ name: "b", cronSchedule: "0 10 * * *" })],
+      startHeartbeat: hb,
+      enabledByTick: [null, new Set(["a", "b"]), new Set(["a", "b"])],
+      lookback: 60 * 60_000,
+    });
+    await runForever(h.deps);
+    expect(h.logs.some((l) => l.includes("dropped queued slot"))).toBe(false);
+    expect(h.dispatched).toContain("b");
+  });
+});
+
+describe("per-job timezone through runForever", () => {
+  test("a timezoned job fires at its local time while the default-matcher job does not", async () => {
+    const h = harness({
+      nows: [d("2026-06-01T13:00:00Z")],
+      playbooks: [
+        pb({ name: "ny", cronSchedule: "0 9 * * *", timezone: "America/New_York" }),
+        pb({ name: "utc", cronSchedule: "0 9 * * *" }),
+      ],
+    });
+    await runForever(h.deps);
+    expect(h.dispatched).toEqual(["ny"]);
+  });
+
+  test("catch-up uses the job's timezone to find the missed slot", async () => {
+    const h = harness({
+      nows: [d("2026-06-01T13:30:00Z")],
+      playbooks: [pb({ name: "ny", cronSchedule: "0 9 * * *", timezone: "America/New_York" })],
+      startHeartbeat: h0Heartbeat({ last_fired: { ny: d("2026-06-01T12:00:00Z").getTime() } }),
+    });
+    await runForever(h.deps);
+    expect(h.dispatched).toEqual(["ny"]);
+    expect(h.heartbeats[0]!.last_fired.ny).toBe(d("2026-06-01T13:00:00Z").getTime());
+  });
+
+  test("next wake is computed from the job's timezone", async () => {
+    const h = harness({
+      nows: [d("2026-06-01T12:59:00Z")],
+      playbooks: [pb({ name: "ny", cronSchedule: "0 9 * * *", timezone: "America/New_York" })],
+      cap: 24 * 60 * 60_000,
+    });
+    await runForever(h.deps);
+    expect(h.sleeps).toEqual([60_000]);
   });
 });
 

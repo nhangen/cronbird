@@ -1,4 +1,4 @@
-import type { CronMatcher } from "./cron";
+import { type CronMatcher } from "./cron";
 import { RunQueue } from "./run-queue";
 import type { CompletionRecord, DispatchRecord, Heartbeat, Job, RunRecord, Topology } from "./types";
 export interface DaemonDeps<T = unknown> {
@@ -35,15 +35,16 @@ export interface DaemonDeps<T = unknown> {
     writeHeartbeat(hb: Heartbeat): void;
     log(msg: string): void;
     host: string;
+    /** Default (host-local) matcher; per-job timezone is handled via {@link matcherForJob}. */
     matcher: CronMatcher;
     maxSleepMs: number;
     /**
-     * Catch-up look-back resolver: given a job's schedule and the current `now`,
+     * Catch-up look-back resolver: given a job and the current `now`,
      * returns how far back a missed slot may be and still replay.
      * Production passes a per-schedule derived resolver (or a fixed window when
      * the host pins a lookback override).
      */
-    resolveLookback(schedule: string, now: Date): number;
+    resolveLookback(job: Job<T>, now: Date): number;
     shouldContinue(): boolean;
     /** Product-supplied precedence; lower number = higher precedence. */
     priority(job: Job<T>): number;

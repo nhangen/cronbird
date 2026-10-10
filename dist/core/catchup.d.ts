@@ -52,8 +52,10 @@ export interface CatchUpFire<T = unknown> {
  * is skipped — the daemon has no basis to claim a slot was missed before it
  * started watching, so first-sight never triggers a replay.
  *
+ * `matcherFor` resolves the per-job timezone-aware matcher for each job.
+ *
  * `lookbackFor` resolves each job's look-back from its own schedule:
  * the daemon passes a period-derived resolver ({@link lookbackForSchedule}) or a
  * fixed `() => n` when the host pins the window via the env override.
  */
-export declare function catchUpFires<T>(jobs: Job<T>[], lastFired: Record<string, number>, now: Date, matcher: CronMatcher, lookbackFor: (schedule: string) => number): CatchUpFire<T>[];
+export declare function catchUpFires<T>(jobs: Job<T>[], lastFired: Record<string, number>, now: Date, matcherFor: (job: Job<T>) => CronMatcher, lookbackFor: (job: Job<T>) => number): CatchUpFire<T>[];

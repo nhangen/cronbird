@@ -29,11 +29,14 @@ export function selectRunnable<T>(
   });
 }
 
-/** Jobs firing during the minute containing `when`. Invalid schedules are skipped. */
-export function dueAt<T>(jobs: Job<T>[], when: Date, matcher: CronMatcher): Job<T>[] {
+/**
+ * Jobs firing during the minute containing `when`. Invalid schedules are skipped.
+ * `matcherFor` resolves the per-job timezone-aware matcher for each job.
+ */
+export function dueAt<T>(jobs: Job<T>[], when: Date, matcherFor: (job: Job<T>) => CronMatcher): Job<T>[] {
   return jobs.filter((p) => {
     try {
-      return matcher.matchesAt(p.cronSchedule, when);
+      return matcherFor(p).matchesAt(p.cronSchedule, when);
     } catch {
       return false;
     }
@@ -46,18 +49,19 @@ export function dueAt<T>(jobs: Job<T>[], when: Date, matcher: CronMatcher): Job<
  * often (picking up edits and self-healing clock skew). Returns the cap when
  * nothing is scheduled or every schedule never fires again. Invalid schedules
  * are ignored.
+ * `matcherFor` resolves the per-job timezone-aware matcher for each job.
  */
 export function nextWake<T>(
   jobs: Job<T>[],
   from: Date,
-  matcher: CronMatcher,
+  matcherFor: (job: Job<T>) => CronMatcher,
   maxSleepMs: number,
 ): number {
   let soonest = Infinity;
   for (const p of jobs) {
     let next: Date | null;
     try {
-      next = matcher.nextFire(p.cronSchedule, from);
+      next = matcherFor(p).nextFire(p.cronSchedule, from);
     } catch {
       continue;
     }

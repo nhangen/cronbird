@@ -10,7 +10,7 @@ export interface SimulateOptions<T = unknown> {
     matcher?: CronMatcher;
     initialHeartbeat?: Heartbeat | null;
     initialLastFired?: Record<string, number>;
-    resolveLookback?: (schedule: string, now: Date) => number;
+    resolveLookback?: (job: Job<T>, now: Date) => number;
     priority?: (job: Job<T>) => number;
     dependencies?: (job: Job<T>) => string[];
 }

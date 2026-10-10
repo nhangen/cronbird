@@ -67,6 +67,7 @@ Paths may use `~` — they are expanded against `$HOME`.
 Fields:
 - `name` — unique job identifier.
 - `cronSchedule` — 5-field cron expression.
+- `timezone` — optional IANA zone (e.g. `"America/New_York"`) the schedule is evaluated in. Omitted → the daemon host's local time. An unknown or empty zone skips the job with a load warning.
 - `isActive` — set `false` to disable without removing.
 - `hosts` — declarative host-intent metadata (default `["*"]`). **Not a runtime gate** — cronbird's scheduler never reads it; where a job runs is decided by `scope` (+ the enabled set / topology owners, below). Kept for the generating layer's own bookkeeping.
 - `scope` — `"single"` (fires only on its topology `owners` host) or `"each"` (fires on every host that has it in that host's enabled set, via `enabledPath`).
