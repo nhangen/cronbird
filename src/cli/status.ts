@@ -126,7 +126,7 @@ export function runStatusCommand(sub: StatusSubcommand, args: string[], deps: St
 
   if (sub === "explain") {
     if (!jobName) {
-      deps.err(`error: explain requires a job name — usage: cronbird explain <config.json> <job-name>\n`);
+      deps.err(`error: explain requires a config and a job name — usage: cronbird explain <config.json> <job-name>, or set CRONBIRD_CONFIG and pass just <job-name>\n`);
       return 2;
     }
     let cfg: CronbirdConfig;
@@ -147,7 +147,7 @@ export function runStatusCommand(sub: StatusSubcommand, args: string[], deps: St
       deps.err(
         skip
           ? `error: job ${JSON.stringify(jobName)} is in the registry but was skipped: ${skip.slice(`skipped ${jobName}: `.length)}\n`
-          : `error: unknown job: ${JSON.stringify(jobName)} (not in registry)\n`,
+          : `error: unknown job: ${JSON.stringify(jobName)} (not in registry ${cfg.registryPath})\n`,
       );
       return 1;
     }
@@ -173,7 +173,7 @@ export function runStatusCommand(sub: StatusSubcommand, args: string[], deps: St
       deps.err(`error: ${e instanceof Error ? e.message : String(e)}\n`);
       return 1;
     }
-    renderExplain(report, parsed, deps);
+    renderExplain(report, configPath, parsed, deps);
     return 0;
   }
 
@@ -349,6 +349,10 @@ function parseFlags(sub: StatusSubcommand, args: string[], deps: StatusCliDeps):
     }
   }
 
+  if (sub === "explain" && positional.length > 2) {
+    deps.err(`unexpected argument: ${JSON.stringify(positional[2])}\n${usage(sub)}`);
+    return 2;
+  }
   return { configPath: positional[0], jobName: positional[1], json, withinMs, job, since, until, limit, count };
 }
 
@@ -463,9 +467,9 @@ function renderHistory(records: RunRecord[], parsed: ParsedArgs, deps: StatusCli
   deps.out(table(rows));
 }
 
-function renderExplain(report: ExplainReport, parsed: ParsedArgs, deps: StatusCliDeps): void {
+function renderExplain(report: ExplainReport, configPath: string, parsed: ParsedArgs, deps: StatusCliDeps): void {
   if (parsed.json) {
-    deps.out(JSON.stringify(report, null, 2) + "\n");
+    deps.out(JSON.stringify({ ...report, configPath }, null, 2) + "\n");
     return;
   }
   // Human-readable rendering: the headline verdict, the gate table, and the
@@ -473,6 +477,7 @@ function renderExplain(report: ExplainReport, parsed: ParsedArgs, deps: StatusCl
   // "why didn't my job run" question one command.
   const verdict = !report.runnable ? "NOT RUNNABLE" : report.scheduleValid ? "RUNNABLE" : "RUNNABLE (schedule invalid — never fires)";
   deps.out(`job=${report.name}  host=${report.host}  ${verdict}\n\n`);
+  deps.out(`config:         ${configPath}\n`);
   deps.out(`schedule:       ${report.schedule}\n`);
   deps.out(`scope:          ${report.scope}\n`);
   deps.out(`active:         ${yesno(report.isActive)}\n`);

@@ -675,7 +675,7 @@ describe("explain", () => {
   test("unknown job → exit 1, error message", () => {
     const { code, err } = run("explain", ["nonexistent"]);
     expect(code).toBe(1);
-    expect(err).toContain('error: unknown job: "nonexistent" (not in registry)');
+    expect(err).toContain(`error: unknown job: "nonexistent" (not in registry ${registryPath})`);
   });
 
   test("missing config file → exit 1 with config error prefix", () => {
@@ -758,6 +758,39 @@ describe("explain", () => {
     expect(code).toBe(0);
     expect(out.join("")).toContain("job=alpha  host=ml-1  RUNNABLE\n");
     expect(out.join("")).toContain("alpha");
+  });
+
+  test("human and JSON output name the config that was read", () => {
+    expect(run("explain", ["alpha"]).out).toContain(`config:         ${configPath}\n`);
+    expect(JSON.parse(run("explain", ["alpha", "--json"]).out).configPath).toBe(configPath);
+  });
+
+  test("CRONBIRD_CONFIG substitution is visible when the lone argument was meant as a config", () => {
+    const err: string[] = [];
+    const code = runStatusCommand("explain", ["/etc/cronbird.conf"], {
+      now: () => NOW, out: () => {}, err: (s) => err.push(s), env: { CRONBIRD_CONFIG: configPath },
+    });
+    expect(code).toBe(1);
+    expect(err.join("")).toContain(`error: unknown job: "/etc/cronbird.conf" (not in registry ${registryPath})`);
+  });
+
+  test("lone argument without CRONBIRD_CONFIG → exit 2 naming both missing pieces", () => {
+    const err: string[] = [];
+    const code = runStatusCommand("explain", ["alpha"], { now: () => NOW, out: () => {}, err: (s) => err.push(s), env: {} });
+    expect(code).toBe(2);
+    expect(err.join("")).toContain("explain requires a config and a job name");
+  });
+
+  test("two .json arguments → the first is the config", () => {
+    const { code, err } = run("explain", ["alpha.json"]);
+    expect(code).toBe(1);
+    expect(err).toContain('unknown job: "alpha.json"');
+  });
+
+  test("extra positional arguments → exit 2", () => {
+    const { code, err } = run("explain", ["alpha", "bravo"]);
+    expect(code).toBe(2);
+    expect(err).toContain("unexpected argument");
   });
 
   test("CRONBIRD_CONFIG environment variable with single <job> argument → exit 0", () => {
