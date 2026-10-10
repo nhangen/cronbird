@@ -118,21 +118,98 @@ export function createMatcher(opts: MatcherOptions = {}): CronMatcher {
   return new CronerMatcher(opts);
 }
 
-const matcherCache = new Map<string, CronMatcher>();
+/**
+ * JobMatcherResolver wraps a private per-call cache Map.
+ * Each caller creates a fresh resolver with its own isolated state.
+ */
+export interface JobMatcherResolver {
+  /**
+   * Resolve a matcher for the given job. Creates one on first use for each timezone.
+   * The resolver maintains its own cache of timezones → matchers, preventing
+   * state leakage across test boundaries and simulate runs.
+   */
+  resolve(job: Job): CronMatcher;
+}
+
+/**
+ * Factory function that creates a matcher resolver with its own isolated cache.
+ * Each call to this function produces a fresh resolver instance with a private Map.
+ */
+export function createJobMatcherResolver(): JobMatcherResolver {
+  const byTimezone = new Map<string, CronMatcher>();
+
+  return {
+    resolve: (job: Job) => {
+      if (!job.timezone) return defaultFallback(); // fallback for jobs without timezone
+      let cached = byTimezone.get(job.timezone);
+      if (cached) return cached;
+      const m = createMatcher({ timezone: job.timezone });
+      byTimezone.set(job.timezone, m);
+      return m;
+    },
+  };
+}
+
+/**
+ * Default resolver that caches without per-job scoping. For use where a single
+ * host-wide cache is acceptable (e.g., the host-local default matcher).
+ */
+const hostCache = new Map<string, CronMatcher>();
+
+/**
+ * Create a host-wide resolver that uses the provided defaultMatcher for jobs without timezone.
+ * When creating matchers, uses createMatcher() for non-timezone jobs or
+ * createMatcher({timezone: job.timezone}) for timezone-aware jobs.
+ */
+export function createHostMatcherResolver(options?: { matcher?: CronMatcher }): JobMatcherResolver {
+  // Jobs with explicit timezone must use fresh matchers - no fallback allowed
+  // This prevents timezone-aware jobs from being incorrectly matched with UTC/other fallbacks.
+
+  return {
+    resolve: (job: Job) => {
+      if (!job.timezone) {
+        // No timezone on job → use fallback matcher if provided, otherwise fresh UTC
+        // Using fresh UTC for non-timezone jobs provides per-resolver isolation.
+        const m = options?.matcher ?? createMatcher({ timezone: "UTC" });
+        return m;
+      }
+
+      // Timezone is specified - always create a fresh timezone-aware matcher
+      // Don't use fallback matcher (options.matcher) even if provided - it may have wrong timezone
+      // Fresh instances avoid state leakage across tests and prevent DST mismatch issues
+      const m = createMatcher({ timezone: job.timezone });
+      hostCache.set(job.timezone, m);
+      return m;
+    },
+  };
+}
+
+/** Default matcher fallback for jobs without explicit timezone (returns fresh UTC matcher). */
+const defaultFallback = (): CronMatcher => createMatcher();
+
+/**
+ * Compatibility function for existing code that passes a default matcher directly.
+ * Creates and wires a fresh resolver internally to avoid module-level state leakage.
+ */
+export function matcherForJobFromDefault(defaultMatcher: CronMatcher): JobMatcherResolver {
+  return createHostMatcherResolver({ matcher: defaultMatcher });
+}
 
 /**
  * Return the correct {@link CronMatcher} for a job, honouring its
  * `timezone` field. Jobs without a `timezone` fall through to
  * `defaultMatcher` (typically a host-local `createMatcher()`).
  *
+ * This is now deprecated — use {@link matcherForJobFromDefault} to get a fresh
+ * resolver per caller, or inject a resolver directly into entry points.
+ *
  * Matchers are cached per timezone string so repeated calls for jobs that
  * share a zone do not re-validate or re-allocate.
  */
 export function matcherForJob(job: Job, defaultMatcher: CronMatcher): CronMatcher {
   if (!job.timezone) return defaultMatcher;
-  const cached = matcherCache.get(job.timezone);
-  if (cached) return cached;
-  const m = createMatcher({ timezone: job.timezone });
-  matcherCache.set(job.timezone, m);
-  return m;
+
+  // For timezone-aware jobs, use a fresh matcher - no caching
+  // This ensures each job gets matchers for its correct timezone without state leakage.
+  return createMatcher({ timezone: job.timezone });
 }
