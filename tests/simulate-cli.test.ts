@@ -183,6 +183,42 @@ describe("simulate CLI — arguments and validation", () => {
   });
 });
 
+describe("simulate CLI — flag parsing", () => {
+  test("flag with no value exits 2", () => {
+    const { code, err } = run([configPath, "--from", "--to", "2026-07-01T15:00:00Z"]);
+    expect(code).toBe(2);
+    expect(err).toContain("missing argument for --from");
+  });
+
+  test("unknown flag exits 2", () => {
+    const { code, err } = run([configPath, "--from", "now", "--to", "+1h", "--bogus"]);
+    expect(code).toBe(2);
+    expect(err).toContain("unknown flag: --bogus");
+  });
+});
+
+describe("simulate CLI — time parsing", () => {
+  const windowOf = (from: string, to: string) => {
+    const { code, out } = run([configPath, "--from", from, "--to", to, "--json"]);
+    expect(code).toBe(0);
+    const r = JSON.parse(out);
+    return [r.fromIso, r.toIso];
+  };
+
+  test("bare duration is in the past for --from and the future for --to", () => {
+    expect(windowOf("1h", "1h")).toEqual(["2026-07-01T11:00:00.000Z", "2026-07-01T13:00:00.000Z"]);
+  });
+
+  test("signed durations go the direction of their sign", () => {
+    expect(windowOf("-30m", "+30m")).toEqual(["2026-07-01T11:30:00.000Z", "2026-07-01T12:30:00.000Z"]);
+  });
+
+  test("epoch-ms is accepted", () => {
+    const ms = String(Date.parse("2026-07-01T10:00:00Z"));
+    expect(windowOf(ms, "now")).toEqual(["2026-07-01T10:00:00.000Z", "2026-07-01T12:00:00.000Z"]);
+  });
+});
+
 describe("simulate CLI — load failures", () => {
   test("missing registry exits 1 instead of reporting an empty window", () => {
     const { code, out, err } = run([missingRegistryConfigPath, "--from", "now", "--to", "+2h"]);
