@@ -200,6 +200,14 @@ export function simulateSchedule<T = unknown>(options: SimulateOptions<T>): Simu
     if (wake === Infinity) {
       break;
     }
+    // The built-in matcher always advances; an injected one that doesn't would stall the cursor forever.
+    if (wake <= 0) {
+      throw new Error(
+        `simulate: matcher returned a next fire at or before ${cursor.toISOString()} for jobs ${runnable
+          .map((j) => j.name)
+          .join(", ")}; CronMatcher.nextFire must return an instant strictly after 'from'`,
+      );
+    }
 
     const nextMs = cursor.getTime() + wake;
     if (nextMs > toMs) {

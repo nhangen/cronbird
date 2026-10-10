@@ -259,6 +259,30 @@ describe("simulateSchedule — core fast-forward engine", () => {
       "2026-06-01T12:00:00.000Z",
     ]);
   });
+
+  test("throws instead of looping when a matcher's nextFire does not advance past the cursor", () => {
+    let calls = 0;
+    const stuck = {
+      nextFire: (_expr: string, from: Date) => {
+        // Bound the calls so a missing guard fails this test instead of hanging the suite.
+        if (++calls > 1_000) throw new Error("runaway");
+        return new Date(from);
+      },
+      matchesAt: (expr: string, when: Date) => m.matchesAt(expr, when),
+    };
+
+    expect(() =>
+      simulateSchedule({
+        from: d("2026-06-01T09:00:00Z"),
+        to: d("2026-06-01T10:00:00Z"),
+        host: "ml-1",
+        jobs: [pb({ name: "every", cronSchedule: "* * * * *" })],
+        enabled: new Set(["every"]),
+        owners: {},
+        matcher: stuck,
+      }),
+    ).toThrow(/strictly after/);
+  });
 });
 
 describe("simulateSchedule — skipped-job diagnostics", () => {
