@@ -272,7 +272,8 @@ nightly-sync  2026-10-09T02:00:00.000Z  4h ago   45.1s     failure  1
 
 - Dispatches nothing and persists no state.
 - Wires the real file providers (`enabledPath`, `topologyPath`, `registryPath`), answering "what will this configuration actually do?" and exposing configuration issues (such as `enabledPath: null`) immediately.
-- Prints the would-dispatch schedule in order of fire time.
+- Prints the would-dispatch schedule in order of fire time, and echoes the resolved window (`window: <fromIso> → <toIso>`) to stderr in table mode.
+- Accepts ISO timestamps with `Z` or an explicit timezone offset, epoch milliseconds (≥13 digits), or relative durations (e.g. `now`, `+24h`, `-30m`, `1h`). Ambiguous inputs without a timezone or shorter than 13 digits are rejected.
 - Lists each active job this host won't run as a `skipped:` line on stderr (owned elsewhere, or not enabled here), and prints a `warning:` for a runnable job whose cron doesn't parse or never fires.
 - Exits 1 with `config error:` when the registry can't be loaded, or when an enabled/topology file is present but unreadable.
 - Starts with no heartbeat, so it doesn't show the catch-up fires a daemon restarting at T0 would run.
@@ -287,6 +288,7 @@ Example:
 
 ```
 $ cronbird simulate ./cronbird.config.json --from 2026-07-01T00:00:00Z --to 2026-07-01T03:00:00Z
+window: 2026-07-01T00:00:00.000Z → 2026-07-01T03:00:00.000Z
 TIME                      JOB
 2026-07-01T00:00:00.000Z  hourly-ping
 2026-07-01T01:00:00.000Z  hourly-ping

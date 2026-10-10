@@ -221,6 +221,89 @@ describe("simulate CLI — time parsing", () => {
     const ms = String(Date.parse("2026-07-01T10:00:00Z"));
     expect(windowOf(ms, "now")).toEqual(["2026-07-01T10:00:00.000Z", "2026-07-01T12:00:00.000Z"]);
   });
+
+  test("all-digit input shorter than 13 digits (e.g. epoch seconds) is rejected", () => {
+    const { code: c1, err: e1 } = run([configPath, "--from", "1782896400", "--to", "now"]);
+    expect(c1).toBe(2);
+    expect(e1).toContain("invalid --from value: \"1782896400\"");
+    expect(e1).toContain("epoch-ms (13+ digits)");
+
+    const { code: c2, err: e2 } = run([configPath, "--from", "now", "--to", "1782896400"]);
+    expect(c2).toBe(2);
+    expect(e2).toContain("invalid --to value: \"1782896400\"");
+    expect(e2).toContain("epoch-ms (13+ digits)");
+
+    expect(run([configPath, "--from", "0", "--to", "now"]).code).toBe(2);
+    expect(run([configPath, "--from", "123456789012", "--to", "now"]).code).toBe(2);
+  });
+
+  test("relative duration beyond the Date range exits 2 naming the flag", () => {
+    const { code, err } = run([configPath, "--from", "now", "--to", "+99999999d"]);
+    expect(code).toBe(2);
+    expect(err).toContain("invalid --to value: \"+99999999d\"");
+  });
+
+  test("zero-padded epoch seconds are rejected, not resolved to 1970", () => {
+    const { code, err } = run([configPath, "--from", "0001782896400", "--to", "now"]);
+    expect(code).toBe(2);
+    expect(err).toContain("invalid --from value: \"0001782896400\"");
+  });
+
+  test("epoch-ms beyond the Date range exits 2 naming the flag", () => {
+    const { code: c1, err: e1 } = run([configPath, "--from", "now", "--to", "9000000000000000"]);
+    expect(c1).toBe(2);
+    expect(e1).toContain("invalid --to value: \"9000000000000000\"");
+
+    const { code: c2, err: e2 } = run([configPath, "--from", "99999999999999999999", "--to", "now"]);
+    expect(c2).toBe(2);
+    expect(e2).toContain("invalid --from value: \"99999999999999999999\"");
+  });
+
+  test("datetime without Z or timezone offset is rejected", () => {
+    const { code: c1, err: e1 } = run([configPath, "--from", "2026-07-01T12:00:00", "--to", "now"]);
+    expect(c1).toBe(2);
+    expect(e1).toContain("invalid --from value: \"2026-07-01T12:00:00\"");
+
+    const { code: c2, err: e2 } = run([configPath, "--from", "2026-07-01 12:00:00", "--to", "now"]);
+    expect(c2).toBe(2);
+    expect(e2).toContain("invalid --from value: \"2026-07-01 12:00:00\"");
+  });
+
+  test("date-only input needs an explicit zone too", () => {
+    const { code, err } = run([configPath, "--from", "2026-07-01", "--to", "now"]);
+    expect(code).toBe(2);
+    expect(err).toContain("invalid --from value: \"2026-07-01\"");
+
+    expect(windowOf("2026-07-01Z", "now")).toEqual(["2026-07-01T00:00:00.000Z", "2026-07-01T12:00:00.000Z"]);
+  });
+
+  test("datetime with timezone offset is accepted", () => {
+    expect(windowOf("2026-07-01T12:00:00+02:00", "2026-07-01T12:00:00-05:00")).toEqual([
+      "2026-07-01T10:00:00.000Z",
+      "2026-07-01T17:00:00.000Z",
+    ]);
+    expect(windowOf("2026-07-01T12:00:00.500+02:00", "2026-07-01T12:00:00z")).toEqual([
+      "2026-07-01T10:00:00.500Z",
+      "2026-07-01T12:00:00.000Z",
+    ]);
+    expect(windowOf("2026-07-01T12:00:00+0200", "2026-07-01T12:00+02:00")).toEqual([
+      "2026-07-01T10:00:00.000Z",
+      "2026-07-01T10:00:00.000Z",
+    ]);
+  });
+
+  test("non-ISO input with a trailing zone is rejected", () => {
+    for (const v of ["1Z", "2026Z", "7/1/2026 12:00Z", "July 1, 2026 12:00 Z", "2026-07-01T12:00:00-05"]) {
+      const { code, err } = run([configPath, "--from", v, "--to", "now"]);
+      expect(code).toBe(2);
+      expect(err).toContain(`invalid --from value: ${JSON.stringify(v)}`);
+    }
+  });
+
+  test("zoned input Date.parse cannot read is rejected", () => {
+    expect(run([configPath, "--from", "fooZ", "--to", "now"]).code).toBe(2);
+    expect(run([configPath, "--from", "2026-13-45T00:00:00Z", "--to", "now"]).code).toBe(2);
+  });
 });
 
 describe("simulate CLI — load failures", () => {
@@ -296,10 +379,50 @@ describe("simulate CLI — output rendering", () => {
 
   test("supports relative durations (+2h, now)", () => {
     // NOW is 12:00Z; from now to +2h should catch 12:00, 13:00, 14:00
-    const { code, out } = run([configPath, "--from", "now", "--to", "+2h"]);
+    const { code, out, err } = run([configPath, "--from", "now", "--to", "+2h"]);
     expect(code).toBe(0);
     expect(out).toContain("hourly");
     expect(out.split("\n").filter((l) => l.includes("hourly")).length).toBe(3);
+    expect(err).toContain("window: 2026-07-01T12:00:00.000Z → 2026-07-01T14:00:00.000Z\n");
+  });
+
+  test("table mode echoes resolved window to stderr", () => {
+    const { code, out, err } = run([
+      configPath,
+      "--from",
+      "2026-07-01T12:00:00Z",
+      "--to",
+      "2026-07-01T14:00:00Z",
+    ]);
+    expect(code).toBe(0);
+    expect(out).toContain("TIME");
+    expect(err).toContain("window: 2026-07-01T12:00:00.000Z → 2026-07-01T14:00:00.000Z\n");
+  });
+
+  test("table mode echoes resolved window to stderr even when no dispatches fire", () => {
+    const { code, out, err } = run([
+      configPath,
+      "--from",
+      "2026-07-01T12:01:00Z",
+      "--to",
+      "2026-07-01T12:59:00Z",
+    ]);
+    expect(code).toBe(0);
+    expect(out).toBe("no dispatches in window\n");
+    expect(err).toContain("window: 2026-07-01T12:01:00.000Z → 2026-07-01T12:59:00.000Z\n");
+  });
+
+  test("--json does not echo window to stderr", () => {
+    const { code, err } = run([
+      configPath,
+      "--from",
+      "2026-07-01T12:00:00Z",
+      "--to",
+      "2026-07-01T13:00:00Z",
+      "--json",
+    ]);
+    expect(code).toBe(0);
+    expect(err).not.toContain("window:");
   });
 });
 
@@ -338,6 +461,7 @@ describe("simulate CLI — end-to-end binary execution", () => {
     );
     expect(r.exitCode).toBe(0);
     expect(r.stdout.toString()).toContain("hourly");
+    expect(r.stderr.toString()).toContain("window: 2026-07-01T12:00:00.000Z → 2026-07-01T13:00:00.000Z");
   });
 
   test("piped output larger than a pipe buffer arrives complete", () => {
