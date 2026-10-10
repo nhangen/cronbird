@@ -137,7 +137,6 @@ function epochMinute(when: Date): number {
 export async function runForever<T>(deps: DaemonDeps<T>): Promise<void> {
   const prior = deps.readHeartbeat();
   const hostResolver = deps.matcherResolver ?? createJobMatcherResolver(deps.matcher);
-  // Need to keep calling runOneTick properly with hostResolver
   // Last-good topology owners. Unlike enabled (safe-empty on a torn read), topology
   // owners are authoritative cross-host state: transiently losing them would
   // de-own a single-scope job and skip a run that minute.

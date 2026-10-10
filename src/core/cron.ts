@@ -135,9 +135,10 @@ export interface JobMatcherResolver {
 /**
  * Create a matcher resolver with its own isolated per-timezone cache.
  *
- * Jobs without a `timezone` return `defaultMatcher` (or a fresh UTC matcher
- * when none is supplied). Jobs with a `timezone` get a dedicated matcher,
- * cached inside this resolver only — no module-level state is shared.
+ * Jobs without a `timezone` return `defaultMatcher` (or a host-local
+ * `createMatcher()` when none is supplied). Jobs with a `timezone` get a
+ * dedicated matcher, cached inside this resolver only — no module-level
+ * state is shared.
  */
 export function createJobMatcherResolver(defaultMatcher?: CronMatcher): JobMatcherResolver {
   const byTimezone = new Map<string, CronMatcher>();
@@ -146,7 +147,7 @@ export function createJobMatcherResolver(defaultMatcher?: CronMatcher): JobMatch
   return {
     resolve: (job: Job) => {
       if (!job.timezone) return fallback;
-      let cached = byTimezone.get(job.timezone);
+      const cached = byTimezone.get(job.timezone);
       if (cached) return cached;
       const m = createMatcher({ timezone: job.timezone });
       byTimezone.set(job.timezone, m);
@@ -166,8 +167,5 @@ export function createJobMatcherResolver(defaultMatcher?: CronMatcher): JobMatch
  */
 export function matcherForJob(job: Job, defaultMatcher: CronMatcher): CronMatcher {
   if (!job.timezone) return defaultMatcher;
-
-  // For timezone-aware jobs, use a fresh matcher - no caching
-  // This ensures each job gets matchers for its correct timezone without state leakage.
   return createMatcher({ timezone: job.timezone });
 }
