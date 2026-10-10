@@ -18,7 +18,16 @@ const quickstartConfigPath = join(dir, "quickstart-config.json");
 
 const NOW = new Date("2026-07-01T12:00:00.000Z");
 
+// createMatcher() in the CLI evaluates crons in host-local time; pin it so the
+// UTC-anchored expectations below hold on hosts with a non-whole-hour offset.
+const originalTz = process.env.TZ;
+afterAll(() => {
+  if (originalTz === undefined) delete process.env.TZ;
+  else process.env.TZ = originalTz;
+});
+
 beforeAll(() => {
+  process.env.TZ = "UTC";
   writeFileSync(
     registryPath,
     JSON.stringify({
