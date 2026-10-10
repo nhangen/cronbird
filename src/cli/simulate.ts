@@ -23,6 +23,9 @@ interface ParsedArgs {
   toRaw: string | undefined;
 }
 
+// Largest epoch-ms a Date can hold; beyond it toISOString() throws.
+const MAX_DATE_MS = 8.64e15;
+
 /** Parse `Nd`/`Nh`/`Nm`/`Ns` into ms. Returns null on any other shape. */
 function parseDuration(s: string | undefined): number | null {
   if (!s) return null;
@@ -62,9 +65,8 @@ function parseTime(s: string | undefined, nowMs: number, defaultDir: -1 | 1): nu
   }
 
   if (/^\d+$/.test(trimmed)) {
-    if (trimmed.length < 13) return null;
     const n = Number(trimmed);
-    if (Number.isFinite(n)) return n;
+    if (n >= 1e12 && n <= MAX_DATE_MS) return n;
     return null;
   }
 

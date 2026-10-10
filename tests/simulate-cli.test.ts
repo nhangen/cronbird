@@ -235,6 +235,22 @@ describe("simulate CLI — time parsing", () => {
     expect(run([configPath, "--from", "123456789012", "--to", "now"]).code).toBe(2);
   });
 
+  test("zero-padded epoch seconds are rejected, not resolved to 1970", () => {
+    const { code, err } = run([configPath, "--from", "0001782896400", "--to", "now"]);
+    expect(code).toBe(2);
+    expect(err).toContain("invalid --from value: \"0001782896400\"");
+  });
+
+  test("epoch-ms beyond the Date range exits 2 naming the flag", () => {
+    const { code: c1, err: e1 } = run([configPath, "--from", "now", "--to", "9000000000000000"]);
+    expect(c1).toBe(2);
+    expect(e1).toContain("invalid --to value: \"9000000000000000\"");
+
+    const { code: c2, err: e2 } = run([configPath, "--from", "99999999999999999999", "--to", "now"]);
+    expect(c2).toBe(2);
+    expect(e2).toContain("invalid --from value: \"99999999999999999999\"");
+  });
+
   test("datetime without Z or timezone offset is rejected", () => {
     const { code: c1, err: e1 } = run([configPath, "--from", "2026-07-01T12:00:00", "--to", "now"]);
     expect(c1).toBe(2);
