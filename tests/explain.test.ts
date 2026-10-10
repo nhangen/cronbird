@@ -38,8 +38,6 @@ function hb(lastFired: Record<string, number> = {}, ts = NOW_MS): Heartbeat {
 
 interface BaseArgs {
   host: string;
-  matcher: ReturnType<typeof createMatcher>;
-  now: Date;
   heartbeat: Heartbeat | null;
   enabled: Set<string>;
   owners: Record<string, string>;
@@ -47,8 +45,6 @@ interface BaseArgs {
 
 const base: BaseArgs = {
   host: "ml-1",
-  matcher,
-  now: NOW,
   heartbeat: null,
   enabled: new Set<string>(),
   owners: {},
@@ -234,12 +230,9 @@ describe("explainJob — unknown job", () => {
 
 describe("explainJob — never-fires-again schedule", () => {
   test("schedule that never fires again → runnable but nextFires empty", () => {
-    // "0 0 31 2 *" — Feb 31st never exists; croner should return null for nextFire
     const r = explain(job({ name: "never", cronSchedule: "0 0 31 2 *" }), { enabled: new Set(["never"]) });
-    // Whether runnable depends on whether croner throws or returns null.
-    // If croner throws → scheduleValid false, runnable still true (gating passed).
-    // If croner returns null → nextFires empty.
-    // Either way, nextFires is empty.
+    expect(r.runnable).toBe(true);
+    expect(r.scheduleValid).toBe(true);
     expect(r.nextFires).toEqual([]);
   });
 });

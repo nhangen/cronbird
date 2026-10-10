@@ -593,7 +593,7 @@ describe("explain", () => {
   test("runnable each-job → RUNNABLE verdict, gate table, next fires", () => {
     const { code, out } = run("explain", ["alpha"]);
     expect(code).toBe(0);
-    expect(out).toContain("RUNNABLE");
+    expect(out).toContain("job=alpha  host=ml-1  RUNNABLE\n");
     expect(out).toContain("alpha");
     expect(out).toContain("GATE");
     expect(out).toContain("enabled-membership");
@@ -601,13 +601,10 @@ describe("explain", () => {
     expect(out).toContain("13:00:00");
   });
 
-  test("not-runnable each-job → NOT RUNNABLE, enabled gate fails", () => {
-    // "bravo" is in the enabled set, so it IS runnable. Use a job that's not enabled.
-    // Actually bravo IS enabled. Let's check "off" (inactive) instead.
+  test("inactive each-job → NOT RUNNABLE, active gate fails", () => {
     const { code, out } = run("explain", ["off"]);
     expect(code).toBe(0);
-    expect(out).toContain("NOT RUNNABLE");
-    // inactive → active gate fails
+    expect(out).toContain("job=off  host=ml-1  NOT RUNNABLE\n");
     const activeLine = out.split("\n").find((l) => l.includes("active") && l.includes("inactive"));
     expect(activeLine).toBeDefined();
   });
@@ -615,16 +612,28 @@ describe("explain", () => {
   test("single-job owned by this host → RUNNABLE", () => {
     const { code, out } = run("explain", ["solo"]);
     expect(code).toBe(0);
-    expect(out).toContain("RUNNABLE");
+    expect(out).toContain("job=solo  host=ml-1  RUNNABLE\n");
     expect(out).toContain("owner-match");
   });
 
   test("single-job owned by another host → NOT RUNNABLE, owner gate fails", () => {
     const { code, out } = run("explain", ["foreign"]);
     expect(code).toBe(0);
-    expect(out).toContain("NOT RUNNABLE");
+    expect(out).toContain("job=foreign  host=ml-1  NOT RUNNABLE\n");
     // owner gate reason mentions "mb-pro" (the foreign owner)
     expect(out).toContain("mb-pro");
+  });
+
+  test("human output shows last fired and the next-fire table", () => {
+    const { out } = run("explain", ["alpha"]);
+    expect(out).toContain("last fired: now\n");
+    expect(out).toMatch(/#\s+NEXT FIRE\s+IN/);
+  });
+
+  test("never-fired, not-runnable job shows '-' and the (none …) line", () => {
+    const { out } = run("explain", ["foreign"]);
+    expect(out).toContain("last fired: -");
+    expect(out).toContain("next fires: (none");
   });
 
   test("unknown job → exit 1, error message", () => {
@@ -682,7 +691,7 @@ describe("explain", () => {
       env: {},
     });
     expect(code).toBe(0);
-    expect(out.join("")).toContain("RUNNABLE");
+    expect(out.join("")).toContain("job=alpha  host=ml-1  RUNNABLE\n");
     expect(out.join("")).toContain("alpha");
   });
 
@@ -696,7 +705,7 @@ describe("explain", () => {
       env: { CRONBIRD_CONFIG: configPath },
     });
     expect(code).toBe(0);
-    expect(out.join("")).toContain("RUNNABLE");
+    expect(out.join("")).toContain("job=alpha  host=ml-1  RUNNABLE\n");
     expect(out.join("")).toContain("alpha");
   });
 });
