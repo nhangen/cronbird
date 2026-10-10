@@ -12,7 +12,7 @@
  * every gate — active? scope? enabled-membership? owner match? schedule
  * validity? — plus the next N fires and the last recorded fire.
  */
-import type { CronMatcher } from "./cron";
+import { type CronMatcher } from "./cron";
 import type { Heartbeat, Job, RunRecord } from "./types";
 /** A single gate the job must pass to be runnable on this host, with the
  *  gate's outcome and a human-readable reason. */
@@ -42,6 +42,9 @@ export interface ExplainReport {
     /** True when the `cronSchedule` cannot be parsed. Distinct from "not
      *  runnable": a runnable job with an invalid schedule never fires. */
     scheduleValid: boolean;
+    /** Why the schedule is invalid ("cronSchedule is blank" or the parser's
+     *  message), or null when it parses. */
+    scheduleError: string | null;
     /** Epoch ms of the newest recorded fire: heartbeat `last_fired`, else the
      *  newest run-history slot (same fallback as {@link JobStatus.lastFired}), or null. */
     lastFired: number | null;

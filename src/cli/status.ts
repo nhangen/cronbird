@@ -474,7 +474,9 @@ function renderExplain(report: ExplainReport, parsed: ParsedArgs, deps: StatusCl
   deps.out(`schedule:       ${report.schedule}\n`);
   deps.out(`scope:          ${report.scope}\n`);
   deps.out(`active:         ${yesno(report.isActive)}\n`);
-  deps.out(`schedule valid: ${yesno(report.scheduleValid)}\n\n`);
+  deps.out(`schedule valid: ${yesno(report.scheduleValid)}\n`);
+  if (report.scheduleError !== null) deps.out(`schedule error: ${report.scheduleError}\n`);
+  deps.out(`\n`);
 
   const gateRows: string[][] = [["GATE", "PASSED", "REASON"]];
   for (const g of report.gates) {

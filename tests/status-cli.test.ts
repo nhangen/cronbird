@@ -669,6 +669,7 @@ describe("explain", () => {
     });
     expect(code).toBe(0);
     expect(out.join("")).toContain("job=broken  host=ml-1  RUNNABLE (schedule invalid — never fires)\n");
+    expect(out.join("")).toContain("schedule error: invalid cron expression");
   });
 
   test("unknown job → exit 1, error message", () => {

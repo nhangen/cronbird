@@ -223,7 +223,22 @@ describe("explainJob — schedule validity", () => {
     const r = explain(job({ name: "bad", cronSchedule: "not-a-cron" }), { enabled: new Set(["bad"]) });
     expect(r.runnable).toBe(true); // gating is separate from schedule validity
     expect(r.scheduleValid).toBe(false);
+    expect(r.scheduleError).toContain("invalid cron expression");
     expect(r.nextFires).toEqual([]);
+  });
+
+  test("valid schedule → scheduleError null", () => {
+    expect(explain(job({ name: "alpha" }), { enabled: new Set(["alpha"]) }).scheduleError).toBeNull();
+  });
+
+  test("a matcher failure that is not a parse error propagates instead of reading as an invalid schedule", () => {
+    const broken = { nextFire: () => { throw new TypeError("matcher bug"); }, matchesAt: () => false };
+    expect(() =>
+      explainJob({
+        jobs: [job({ name: "alpha" })], name: "alpha", host: "ml-1", enabled: new Set(["alpha"]), owners: {},
+        heartbeat: null, matcher: broken, now: NOW,
+      }),
+    ).toThrow("matcher bug");
   });
 
   test("blank schedule → not runnable, schedule gate is the failing gate", () => {

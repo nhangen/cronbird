@@ -12,7 +12,7 @@
  * every gate — active? scope? enabled-membership? owner match? schedule
  * validity? — plus the next N fires and the last recorded fire.
  */
-import type { CronMatcher } from "./cron";
+import { CronExpressionError, type CronMatcher } from "./cron";
 import { mergeRunRecords } from "./history";
 import { selectRunnable } from "./select";
 import type { Heartbeat, Job, RunRecord } from "./types";
@@ -46,6 +46,9 @@ export interface ExplainReport {
   /** True when the `cronSchedule` cannot be parsed. Distinct from "not
    *  runnable": a runnable job with an invalid schedule never fires. */
   scheduleValid: boolean;
+  /** Why the schedule is invalid ("cronSchedule is blank" or the parser's
+   *  message), or null when it parses. */
+  scheduleError: string | null;
   /** Epoch ms of the newest recorded fire: heartbeat `last_fired`, else the
    *  newest run-history slot (same fallback as {@link JobStatus.lastFired}), or null. */
   lastFired: number | null;
@@ -157,16 +160,18 @@ export function explainJob<T>(args: {
 
   // Schedule validity (distinct from runnable — a runnable job with a broken
   // schedule never fires; this is the "invalid-schedule" health in ./status).
-  let scheduleValid = true;
+  let scheduleError: string | null = null;
   if (job.cronSchedule.trim() === "") {
-    scheduleValid = false;
+    scheduleError = "cronSchedule is blank";
   } else {
     try {
       matcher.nextFire(job.cronSchedule, now);
-    } catch {
-      scheduleValid = false;
+    } catch (e) {
+      if (!(e instanceof CronExpressionError)) throw e;
+      scheduleError = e.message;
     }
   }
+  const scheduleValid = scheduleError === null;
 
   // Next N fires, strictly after `now`. Only computed when runnable AND the
   // schedule parses — otherwise the daemon can't fire it on this host anyway.
@@ -175,13 +180,8 @@ export function explainJob<T>(args: {
   if (runnable && scheduleValid) {
     let cursor: Date = now;
     for (let i = 0; i < count; i++) {
-      let next: Date | null;
-      try {
-        next = matcher.nextFire(job.cronSchedule, cursor);
-      } catch {
-        break; // invalid — shouldn't reach here given scheduleValid, but be safe
-      }
-      if (next === null) break; // never fires again
+      const next = matcher.nextFire(job.cronSchedule, cursor);
+      if (next === null) break;
       nextFires.push(next.getTime());
       cursor = next;
     }
@@ -205,6 +205,7 @@ export function explainJob<T>(args: {
     runnable,
     gates,
     scheduleValid,
+    scheduleError,
     lastFired,
     nextFires,
   };
