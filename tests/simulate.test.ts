@@ -197,3 +197,43 @@ describe("simulateSchedule — core fast-forward engine", () => {
     expect(new Date(report.dispatches[0]!.slotTs).toISOString()).toBe("2026-06-01T08:00:00.000Z");
   });
 });
+
+describe("simulateSchedule — skipped-job diagnostics", () => {
+  test("warns for each active job that is not runnable on this host", () => {
+    const report = simulateSchedule({
+      from: d("2026-06-01T09:00:00Z"),
+      to: d("2026-06-01T09:00:00Z"),
+      host: "ml-1",
+      jobs: [
+        pb({ name: "eachDisabled", scope: "each" }),
+        pb({ name: "singleNoOwner", scope: "single" }),
+        pb({ name: "singleOther", scope: "single" }),
+        pb({ name: "inactive", scope: "each", isActive: false }),
+      ],
+      enabled: new Set(),
+      owners: { singleOther: "ml-2" },
+      matcher: m,
+    });
+
+    expect(report.warnings).toEqual([
+      "eachDisabled: not runnable on ml-1 (scope=each, not in enabled set)",
+      "singleNoOwner: not runnable on ml-1 (scope=single, owner=none)",
+      "singleOther: not runnable on ml-1 (scope=single, owner=ml-2)",
+    ]);
+  });
+
+  test("warns for a runnable job whose schedule does not parse", () => {
+    const report = simulateSchedule({
+      from: d("2026-06-01T09:00:00Z"),
+      to: d("2026-06-01T10:00:00Z"),
+      host: "ml-1",
+      jobs: [pb({ name: "typo", cronSchedule: "0 25 * * *" }), pb({ name: "ok", cronSchedule: "0 * * * *" })],
+      enabled: new Set(["typo", "ok"]),
+      owners: {},
+      matcher: m,
+    });
+
+    expect(report.warnings).toEqual(['typo: invalid cron schedule "0 25 * * *"']);
+    expect(report.dispatches.map((x) => x.job)).toEqual(["ok", "ok"]);
+  });
+});

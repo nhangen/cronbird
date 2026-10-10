@@ -45,6 +45,33 @@ export interface SimulationReport {
   warnings: string[];
 }
 
+// selectRunnable and the matcher-driven helpers drop these without a trace,
+// which is right for the daemon but hides exactly what a dry run is for.
+function skippedJobWarnings<T>(options: SimulateOptions<T>, selected: Job<T>[], matcher: CronMatcher): string[] {
+  const selectedNames = new Set(selected.map((j) => j.name));
+  const out: string[] = [];
+  for (const job of options.jobs) {
+    if (!job.isActive || job.cronSchedule.trim() === "") continue;
+    if (!selectedNames.has(job.name)) {
+      const why =
+        job.scope === "each"
+          ? "scope=each, not in enabled set"
+          : `scope=single, owner=${options.owners[job.name] ?? "none"}`;
+      out.push(`${job.name}: not runnable on ${options.host} (${why})`);
+      continue;
+    }
+    let next: Date | null;
+    try {
+      next = matcher.nextFire(job.cronSchedule, options.from);
+    } catch {
+      out.push(`${job.name}: invalid cron schedule ${JSON.stringify(job.cronSchedule)}`);
+      continue;
+    }
+    if (next === null) out.push(`${job.name}: schedule ${JSON.stringify(job.cronSchedule)} never fires`);
+  }
+  return out;
+}
+
 export function simulateSchedule<T = unknown>(options: SimulateOptions<T>): SimulationReport {
   const fromMs = options.from.getTime();
   const toMs = options.to.getTime();
@@ -64,7 +91,7 @@ export function simulateSchedule<T = unknown>(options: SimulateOptions<T>): Simu
   const { invalid, warnings: depWarnings } = validateDependencies(options.jobs, upstreamsOf);
   const runnable = invalid.size ? selected.filter((j) => !invalid.has(j.name)) : selected;
 
-  const warnings = [...depWarnings];
+  const warnings = [...depWarnings, ...skippedJobWarnings(options, selected, matcher)];
   const dispatches: SimulatedDispatch[] = [];
 
   if (runnable.length === 0) {
