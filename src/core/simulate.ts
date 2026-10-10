@@ -42,34 +42,43 @@ export interface SimulationReport {
   to: number;
   toIso: string;
   dispatches: SimulatedDispatch[];
+  /** Active jobs this host doesn't run (owned elsewhere, not enabled here). Expected on multi-host setups. */
+  skipped: string[];
   warnings: string[];
 }
 
 // selectRunnable and the matcher-driven helpers drop these without a trace,
 // which is right for the daemon but hides exactly what a dry run is for.
-function skippedJobWarnings<T>(options: SimulateOptions<T>, selected: Job<T>[], matcher: CronMatcher): string[] {
+function describeSkippedJobs<T>(
+  options: SimulateOptions<T>,
+  selected: Job<T>[],
+  matcher: CronMatcher,
+): { skipped: string[]; warnings: string[] } {
   const selectedNames = new Set(selected.map((j) => j.name));
-  const out: string[] = [];
+  const skipped: string[] = [];
+  const warnings: string[] = [];
   for (const job of options.jobs) {
     if (!job.isActive || job.cronSchedule.trim() === "") continue;
     if (!selectedNames.has(job.name)) {
       const why =
         job.scope === "each"
           ? "scope=each, not in enabled set"
-          : `scope=single, owner=${options.owners[job.name] ?? "none"}`;
-      out.push(`${job.name}: not runnable on ${options.host} (${why})`);
+          : job.scope === "single"
+            ? `scope=single, owner=${options.owners[job.name] ?? "none"}`
+            : `scope=${String(job.scope)}`;
+      skipped.push(`${job.name}: not runnable on ${options.host} (${why})`);
       continue;
     }
     let next: Date | null;
     try {
       next = matcher.nextFire(job.cronSchedule, options.from);
     } catch {
-      out.push(`${job.name}: invalid cron schedule ${JSON.stringify(job.cronSchedule)}`);
+      warnings.push(`${job.name}: invalid cron schedule ${JSON.stringify(job.cronSchedule)}`);
       continue;
     }
-    if (next === null) out.push(`${job.name}: schedule ${JSON.stringify(job.cronSchedule)} never fires`);
+    if (next === null) warnings.push(`${job.name}: schedule ${JSON.stringify(job.cronSchedule)} never fires`);
   }
-  return out;
+  return { skipped, warnings };
 }
 
 export function simulateSchedule<T = unknown>(options: SimulateOptions<T>): SimulationReport {
@@ -91,7 +100,8 @@ export function simulateSchedule<T = unknown>(options: SimulateOptions<T>): Simu
   const { invalid, warnings: depWarnings } = validateDependencies(options.jobs, upstreamsOf);
   const runnable = invalid.size ? selected.filter((j) => !invalid.has(j.name)) : selected;
 
-  const warnings = [...depWarnings, ...skippedJobWarnings(options, selected, matcher)];
+  const { skipped, warnings: scheduleWarnings } = describeSkippedJobs(options, selected, matcher);
+  const warnings = [...depWarnings, ...scheduleWarnings];
   const dispatches: SimulatedDispatch[] = [];
 
   if (runnable.length === 0) {
@@ -102,6 +112,7 @@ export function simulateSchedule<T = unknown>(options: SimulateOptions<T>): Simu
       to: toMs,
       toIso: options.to.toISOString(),
       dispatches,
+      skipped,
       warnings,
     };
   }
@@ -125,6 +136,7 @@ export function simulateSchedule<T = unknown>(options: SimulateOptions<T>): Simu
       to: toMs,
       toIso: options.to.toISOString(),
       dispatches,
+      skipped,
       warnings,
     };
   }
@@ -211,6 +223,7 @@ export function simulateSchedule<T = unknown>(options: SimulateOptions<T>): Simu
     to: toMs,
     toIso: options.to.toISOString(),
     dispatches,
+    skipped,
     warnings,
   };
 }

@@ -239,7 +239,7 @@ describe("simulateSchedule — core fast-forward engine", () => {
 });
 
 describe("simulateSchedule — skipped-job diagnostics", () => {
-  test("warns for each active job that is not runnable on this host", () => {
+  test("lists each active job that is not runnable on this host as skipped, not as a warning", () => {
     const report = simulateSchedule({
       from: d("2026-06-01T09:00:00Z"),
       to: d("2026-06-01T09:00:00Z"),
@@ -255,11 +255,12 @@ describe("simulateSchedule — skipped-job diagnostics", () => {
       matcher: m,
     });
 
-    expect(report.warnings).toEqual([
+    expect(report.skipped).toEqual([
       "eachDisabled: not runnable on ml-1 (scope=each, not in enabled set)",
       "singleNoOwner: not runnable on ml-1 (scope=single, owner=none)",
       "singleOther: not runnable on ml-1 (scope=single, owner=ml-2)",
     ]);
+    expect(report.warnings).toEqual([]);
   });
 
   test("warns for a runnable job whose schedule does not parse", () => {
@@ -275,5 +276,19 @@ describe("simulateSchedule — skipped-job diagnostics", () => {
 
     expect(report.warnings).toEqual(['typo: invalid cron schedule "0 25 * * *"']);
     expect(report.dispatches.map((x) => x.job)).toEqual(["ok", "ok"]);
+  });
+
+  test("warns for a runnable job whose schedule never fires", () => {
+    const report = simulateSchedule({
+      from: d("2026-06-01T09:00:00Z"),
+      to: d("2026-06-01T10:00:00Z"),
+      host: "ml-1",
+      jobs: [pb({ name: "feb30", cronSchedule: "0 0 30 2 *" })],
+      enabled: new Set(["feb30"]),
+      owners: {},
+      matcher: m,
+    });
+
+    expect(report.warnings).toEqual(['feb30: schedule "0 0 30 2 *" never fires']);
   });
 });

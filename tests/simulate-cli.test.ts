@@ -292,7 +292,7 @@ describe("simulate CLI — output rendering", () => {
 });
 
 describe("simulate CLI — Issue #10 regression / integration", () => {
-  test("quickstart with null enabledPath and null topologyPath warns about every skipped job (#10)", () => {
+  test("quickstart with null enabledPath and null topologyPath reports every skipped job (#10)", () => {
     // Reproduces #10: fileEnabledProvider(null) returns empty set, fileTopologyProvider(null) returns null.
     // single-scope job 'daily' has no owner; each-scope 'hourly' is not enabled.
     const { code, out, err } = run([
@@ -304,8 +304,8 @@ describe("simulate CLI — Issue #10 regression / integration", () => {
     ]);
     expect(code).toBe(0);
     expect(out).toBe("no dispatches in window\n");
-    expect(err).toContain("warning: hourly: not runnable on ml-1 (scope=each, not in enabled set)");
-    expect(err).toContain("warning: daily: not runnable on ml-1 (scope=single, owner=none)");
+    expect(err).toContain("skipped: hourly: not runnable on ml-1 (scope=each, not in enabled set)");
+    expect(err).toContain("skipped: daily: not runnable on ml-1 (scope=single, owner=none)");
   });
 });
 

@@ -144,6 +144,7 @@ export function runSimulateCommand(args: string[], deps: SimulateCliDeps): numbe
     matcher: createMatcher(),
   });
 
+  for (const s of report.skipped) deps.err(`skipped: ${s}\n`);
   for (const w of report.warnings) {
     deps.err(`warning: ${w}\n`);
   }

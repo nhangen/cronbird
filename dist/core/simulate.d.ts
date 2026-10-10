@@ -28,6 +28,8 @@ export interface SimulationReport {
     to: number;
     toIso: string;
     dispatches: SimulatedDispatch[];
+    /** Active jobs this host doesn't run (owned elsewhere, not enabled here). Expected on multi-host setups. */
+    skipped: string[];
     warnings: string[];
 }
 export declare function simulateSchedule<T = unknown>(options: SimulateOptions<T>): SimulationReport;
