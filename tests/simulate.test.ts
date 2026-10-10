@@ -236,6 +236,74 @@ describe("simulateSchedule — core fast-forward engine", () => {
     });
     expect(overridden.dispatches).toEqual([]);
   });
+
+  test("catch-up: missed slots dispatch only at T0, not on every later tick", () => {
+    const report = simulateSchedule({
+      from: d("2026-06-01T09:00:00Z"),
+      to: d("2026-06-01T12:00:00Z"),
+      host: "ml-1",
+      jobs: [pb({ name: "eight", cronSchedule: "0 8 * * *" }), pb({ name: "hourly", cronSchedule: "0 * * * *" })],
+      enabled: new Set(["eight", "hourly"]),
+      owners: {},
+      matcher: m,
+      initialLastFired: { eight: d("2026-05-31T08:00:00Z").getTime() },
+    });
+
+    expect(report.dispatches.filter((x) => x.type === "catchup").map((x) => `${x.job}@${x.timeIso}`)).toEqual([
+      "eight@2026-06-01T09:00:00.000Z",
+    ]);
+    expect(report.dispatches.filter((x) => x.type === "due").map((x) => x.timeIso)).toEqual([
+      "2026-06-01T09:00:00.000Z",
+      "2026-06-01T10:00:00.000Z",
+      "2026-06-01T11:00:00.000Z",
+      "2026-06-01T12:00:00.000Z",
+    ]);
+  });
+
+  test("a window starting inside the DST fall-back hour runs through with the built-in matcher", () => {
+    const report = simulateSchedule({
+      from: d("2026-11-01T06:10:00Z"),
+      to: d("2026-11-01T07:05:00Z"),
+      host: "ml-1",
+      jobs: [pb({ name: "every", cronSchedule: "* * * * *" })],
+      enabled: new Set(["every"]),
+      owners: {},
+      matcher: createMatcher({ timezone: "America/New_York" }),
+    });
+
+    expect(report.dispatches.map((x) => x.timeIso)).toEqual([
+      "2026-11-01T07:00:00.000Z",
+      "2026-11-01T07:01:00.000Z",
+      "2026-11-01T07:02:00.000Z",
+      "2026-11-01T07:03:00.000Z",
+      "2026-11-01T07:04:00.000Z",
+      "2026-11-01T07:05:00.000Z",
+    ]);
+  });
+
+  test("throws instead of looping when a matcher's nextFire does not advance past the cursor", () => {
+    let calls = 0;
+    const stuck = {
+      nextFire: (_expr: string, from: Date) => {
+        // Bound the calls so a missing guard fails this test instead of hanging the suite.
+        if (++calls > 1_000) throw new Error("runaway");
+        return new Date(from);
+      },
+      matchesAt: (expr: string, when: Date) => m.matchesAt(expr, when),
+    };
+
+    expect(() =>
+      simulateSchedule({
+        from: d("2026-06-01T09:00:00Z"),
+        to: d("2026-06-01T10:00:00Z"),
+        host: "ml-1",
+        jobs: [pb({ name: "every", cronSchedule: "* * * * *" })],
+        enabled: new Set(["every"]),
+        owners: {},
+        matcher: stuck,
+      }),
+    ).toThrow(/strictly after/);
+  });
 });
 
 describe("simulateSchedule — skipped-job diagnostics", () => {

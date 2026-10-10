@@ -161,12 +161,6 @@ export function simulateSchedule<T = unknown>(options: SimulateOptions<T>): Simu
     }
     isFirstTick = false;
 
-    for (const j of runnable) {
-      if (lastFired[j.name] === undefined) {
-        lastFired[j.name] = currentMs;
-      }
-    }
-
     const batch: SimulatedDispatch[] = [];
 
     for (const j of due) {
@@ -177,7 +171,6 @@ export function simulateSchedule<T = unknown>(options: SimulateOptions<T>): Simu
         slotTs: minuteStart,
         type: "due",
       });
-      lastFired[j.name] = Math.max(lastFired[j.name] ?? 0, minuteStart);
     }
 
     for (const f of catches) {
@@ -189,7 +182,6 @@ export function simulateSchedule<T = unknown>(options: SimulateOptions<T>): Simu
         slotTs: slotMs,
         type: "catchup",
       });
-      lastFired[f.job.name] = Math.max(lastFired[f.job.name] ?? 0, slotMs);
     }
 
     batch.sort((a, b) => {
@@ -205,8 +197,16 @@ export function simulateSchedule<T = unknown>(options: SimulateOptions<T>): Simu
     }
 
     const wake = nextWake(runnable, cursor, (p) => matcherForJob(p, matcher), Infinity);
-    if (wake === Infinity || wake <= 0) {
+    if (wake === Infinity) {
       break;
+    }
+    // The built-in matcher always advances; an injected one that doesn't would stall the cursor forever.
+    if (wake <= 0) {
+      throw new Error(
+        `simulate: matcher returned a next fire at or before ${cursor.toISOString()} for jobs ${runnable
+          .map((j) => j.name)
+          .join(", ")}; CronMatcher.nextFire must return an instant strictly after 'from'`,
+      );
     }
 
     const nextMs = cursor.getTime() + wake;
