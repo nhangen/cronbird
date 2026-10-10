@@ -274,6 +274,15 @@ describe("simulate CLI — time parsing", () => {
       "2026-07-01T10:00:00.500Z",
       "2026-07-01T12:00:00.000Z",
     ]);
+    expect(windowOf("2026-07-01T12:00:00+0200", "2026-07-01T12:00+02:00")).toEqual([
+      "2026-07-01T10:00:00.000Z",
+      "2026-07-01T10:00:00.000Z",
+    ]);
+  });
+
+  test("zoned input that is not a real date is rejected", () => {
+    expect(run([configPath, "--from", "fooZ", "--to", "now"]).code).toBe(2);
+    expect(run([configPath, "--from", "2026-13-45T00:00:00Z", "--to", "now"]).code).toBe(2);
   });
 });
 
