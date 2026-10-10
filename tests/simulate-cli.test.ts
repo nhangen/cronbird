@@ -300,7 +300,7 @@ describe("simulate CLI — time parsing", () => {
     }
   });
 
-  test("zoned input that is not a real date is rejected", () => {
+  test("zoned input Date.parse cannot read is rejected", () => {
     expect(run([configPath, "--from", "fooZ", "--to", "now"]).code).toBe(2);
     expect(run([configPath, "--from", "2026-13-45T00:00:00Z", "--to", "now"]).code).toBe(2);
   });
