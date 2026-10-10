@@ -37,8 +37,8 @@ function parseDuration(s: string | undefined): number | null {
  * Parse time string into epoch ms.
  * Supports:
  * - "now" -> nowMs
- * - ISO timestamps (e.g. "2026-07-01T09:00:00Z")
- * - Epoch ms (e.g. "1782896400000")
+ * - ISO timestamps with Z or offset (e.g. "2026-07-01T09:00:00Z")
+ * - Epoch ms (>= 13 digits, e.g. "1782896400000")
  * - Signed relative durations: "+1h", "-30m"
  * - Bare durations: defaultDir indicates whether bare "1h" means past (-1) or future (+1)
  */
@@ -62,8 +62,14 @@ function parseTime(s: string | undefined, nowMs: number, defaultDir: -1 | 1): nu
   }
 
   if (/^\d+$/.test(trimmed)) {
+    if (trimmed.length < 13) return null;
     const n = Number(trimmed);
     if (Number.isFinite(n)) return n;
+    return null;
+  }
+
+  if (!/(?:[zZ]|:\d{2}(?:\.\d+)?[+-]\d{2}(?::?\d{2})?)$/.test(trimmed)) {
+    return null;
   }
 
   const parsed = Date.parse(trimmed);
@@ -95,13 +101,13 @@ export function runSimulateCommand(args: string[], deps: SimulateCliDeps): numbe
   const nowMs = deps.now().getTime();
   const fromMs = parseTime(parsed.fromRaw, nowMs, -1);
   if (fromMs === null) {
-    deps.err(`invalid --from value: ${JSON.stringify(parsed.fromRaw)} (use ISO timestamp, epoch-ms, or duration like 1h)\n`);
+    deps.err(`invalid --from value: ${JSON.stringify(parsed.fromRaw)} (use ISO timestamp with Z/offset, epoch-ms, or duration like 1h)\n`);
     return 2;
   }
 
   const toMs = parseTime(parsed.toRaw, nowMs, 1);
   if (toMs === null) {
-    deps.err(`invalid --to value: ${JSON.stringify(parsed.toRaw)} (use ISO timestamp, epoch-ms, or duration like 1h)\n`);
+    deps.err(`invalid --to value: ${JSON.stringify(parsed.toRaw)} (use ISO timestamp with Z/offset, epoch-ms, or duration like 1h)\n`);
     return 2;
   }
 
@@ -153,6 +159,8 @@ export function runSimulateCommand(args: string[], deps: SimulateCliDeps): numbe
     deps.out(JSON.stringify(report, null, 2) + "\n");
     return 0;
   }
+
+  deps.err(`window: ${report.fromIso} → ${report.toIso}\n`);
 
   if (report.dispatches.length === 0) {
     deps.out("no dispatches in window\n");
