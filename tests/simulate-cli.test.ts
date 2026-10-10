@@ -258,13 +258,17 @@ describe("simulate CLI — time parsing", () => {
     expect(c1).toBe(2);
     expect(e1).toContain("invalid --from value: \"2026-07-01T12:00:00\"");
 
-    const { code: c2, err: e2 } = run([configPath, "--from", "2026-07-01", "--to", "now"]);
+    const { code: c2, err: e2 } = run([configPath, "--from", "2026-07-01 12:00:00", "--to", "now"]);
     expect(c2).toBe(2);
-    expect(e2).toContain("invalid --from value: \"2026-07-01\"");
+    expect(e2).toContain("invalid --from value: \"2026-07-01 12:00:00\"");
+  });
 
-    const { code: c3, err: e3 } = run([configPath, "--from", "2026-07-01 12:00:00", "--to", "now"]);
-    expect(c3).toBe(2);
-    expect(e3).toContain("invalid --from value: \"2026-07-01 12:00:00\"");
+  test("date-only input needs an explicit zone too", () => {
+    const { code, err } = run([configPath, "--from", "2026-07-01", "--to", "now"]);
+    expect(code).toBe(2);
+    expect(err).toContain("invalid --from value: \"2026-07-01\"");
+
+    expect(windowOf("2026-07-01Z", "now")).toEqual(["2026-07-01T00:00:00.000Z", "2026-07-01T12:00:00.000Z"]);
   });
 
   test("datetime with timezone offset is accepted", () => {
