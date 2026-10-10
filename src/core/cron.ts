@@ -44,7 +44,7 @@ export interface MatcherOptions {
 }
 
 const MINUTE_MS = 60_000;
-// Longest real-world DST overlap is one hour; the slack covers any odd zone.
+// Longest current DST overlap is two hours (Antarctica/Troll); the cap leaves slack.
 const MAX_OVERLAP_PROBES = 3 * 60;
 
 class CronerMatcher implements CronMatcher {
@@ -70,10 +70,9 @@ class CronerMatcher implements CronMatcher {
 
   nextFire(expr: string, from: Date): Date | null {
     const cron = this.build(expr);
-    // Queried from inside a DST fall-back hour, croner maps the next wall-clock
-    // minute to its first (earlier) occurrence, i.e. before `from`. Step past
-    // the overlap until it returns a real successor.
-    for (let probe = from.getTime(), i = 0; i <= MAX_OVERLAP_PROBES; probe += MINUTE_MS, i++) {
+    // Inside a DST fall-back hour croner 9.1 can return an instant before `from`.
+    // Step past the overlap until it returns a real successor.
+    for (let probe = from.getTime(), i = 0; i < MAX_OVERLAP_PROBES; probe += MINUTE_MS, i++) {
       const next = cron.nextRun(new Date(probe));
       if (next === null || next.getTime() > from.getTime()) return next;
     }
