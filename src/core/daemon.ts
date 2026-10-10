@@ -13,7 +13,7 @@
  */
 import { catchUpFires } from "./catchup";
 import { FATAL_EXIT_CODE, MAX_ATTEMPTS, MAX_CONCURRENT } from "./constants";
-import { matcherForJob, createHostMatcherResolver, type CronMatcher, type JobMatcherResolver } from "./cron";
+import { createJobMatcherResolver, type CronMatcher, type JobMatcherResolver } from "./cron";
 import { failedJobs, isEligible, transitiveUpstreamFailed, validateDependencies } from "./dependencies";
 import { RunQueue } from "./run-queue";
 import { dueAt, nextWake, selectRunnable } from "./select";
@@ -53,8 +53,9 @@ export interface DaemonDeps<T = unknown> {
   writeHeartbeat(hb: Heartbeat): void;
   log(msg: string): void;
   host: string;
-  /** Optional resolver for creating matchers; if not provided, creates a new host-wide resolver using deps.matcher as default. */
+  /** Optional resolver for creating matchers; if not provided, creates a fresh per-caller resolver. */
   matcherResolver?: JobMatcherResolver;
+  /** Default matcher for jobs without a timezone (used when matcherResolver is not provided). */
   matcher?: CronMatcher;
   maxSleepMs: number;
   /**
@@ -135,7 +136,7 @@ function epochMinute(when: Date): number {
 
 export async function runForever<T>(deps: DaemonDeps<T>): Promise<void> {
   const prior = deps.readHeartbeat();
-  const hostResolver = deps.matcherResolver ?? createHostMatcherResolver();
+  const hostResolver = deps.matcherResolver ?? createJobMatcherResolver(deps.matcher);
   // Need to keep calling runOneTick properly with hostResolver
   // Last-good topology owners. Unlike enabled (safe-empty on a torn read), topology
   // owners are authoritative cross-host state: transiently losing them would

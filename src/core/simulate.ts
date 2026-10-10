@@ -7,7 +7,7 @@
  */
 import { catchUpFires, lookbackForSchedule } from "./catchup";
 import { CATCHUP_LOOKBACK_CAP_MS, CATCHUP_LOOKBACK_FLOOR_MS } from "./constants";
-import { createMatcher, matcherForJob, createHostMatcherResolver, matcherForJobFromDefault, type CronMatcher, type JobMatcherResolver, createJobMatcherResolver } from "./cron";
+import { createMatcher, createJobMatcherResolver, type CronMatcher, type JobMatcherResolver } from "./cron";
 import { validateDependencies } from "./dependencies";
 import { dueAt, nextWake, selectRunnable } from "./select";
 import type { Heartbeat, Job } from "./types";
@@ -20,6 +20,8 @@ export interface SimulateOptions<T = unknown> {
   enabled: Set<string>;
   owners: Record<string, string>;
   matcherResolver?: JobMatcherResolver;
+  /** Default matcher for jobs without a timezone. Shortcut for passing a resolver via `matcherResolver`. */
+  matcher?: CronMatcher;
   initialHeartbeat?: Heartbeat | null;
   initialLastFired?: Record<string, number>;
   resolveLookback?: (job: Job<T>, now: Date) => number;
@@ -52,7 +54,7 @@ export interface SimulationReport {
 function describeSkippedJobs<T>(
   options: SimulateOptions<T>,
   selected: Job<T>[],
-  matcherForJob: (job: Job<T>) => CronMatcher,
+  resolve: (job: Job<T>) => CronMatcher,
 ): { skipped: string[]; warnings: string[] } {
   const selectedNames = new Set(selected.map((j) => j.name));
   const skipped: string[] = [];
@@ -71,7 +73,7 @@ function describeSkippedJobs<T>(
     }
     let next: Date | null;
     try {
-      const m = matcherForJob(job);
+      const m = resolve(job);
       next = m.nextFire(job.cronSchedule, options.from);
     } catch {
       warnings.push(`${job.name}: invalid cron schedule ${JSON.stringify(job.cronSchedule)}`);
@@ -91,7 +93,7 @@ export function simulateSchedule<T = unknown>(options: SimulateOptions<T>): Simu
   }
 
   const defaultMatcher = options.matcher ?? createMatcher();
-  const resolverForCalls = options.matcherResolver ?? createHostMatcherResolver({ matcher: defaultMatcher });
+  const resolver = options.matcherResolver ?? createJobMatcherResolver(defaultMatcher);
   const priority = options.priority ?? (() => 0);
   const upstreamsOf = (n: string): string[] => {
     const job = options.jobs.find((x) => x.name === n);
@@ -102,8 +104,7 @@ export function simulateSchedule<T = unknown>(options: SimulateOptions<T>): Simu
   const { invalid, warnings: depWarnings } = validateDependencies(options.jobs, upstreamsOf);
   const runnable = invalid.size ? selected.filter((j) => !invalid.has(j.name)) : selected;
 
-  const matcherForJob = options.matcherResolver ?? matcherForJobFromDefault(defaultMatcher);
-  const { skipped, warnings: scheduleWarnings } = describeSkippedJobs(options, selected, matcherForJob);
+  const { skipped, warnings: scheduleWarnings } = describeSkippedJobs(options, selected, (job) => resolver.resolve(job));
   const warnings = [...depWarnings, ...scheduleWarnings];
   const dispatches: SimulatedDispatch[] = [];
 
@@ -123,7 +124,7 @@ export function simulateSchedule<T = unknown>(options: SimulateOptions<T>): Simu
   const resolveLookback =
     options.resolveLookback ??
     ((job, now) =>
-      lookbackForSchedule(job.cronSchedule, now, resolverForCalls.resolve(job), CATCHUP_LOOKBACK_FLOOR_MS, CATCHUP_LOOKBACK_CAP_MS));
+      lookbackForSchedule(job.cronSchedule, now, resolver.resolve(job), CATCHUP_LOOKBACK_FLOOR_MS, CATCHUP_LOOKBACK_CAP_MS));
 
   const lastFired: Record<string, number> = {
     ...(options.initialHeartbeat?.last_fired ?? {}),
@@ -152,13 +153,13 @@ export function simulateSchedule<T = unknown>(options: SimulateOptions<T>): Simu
     const minute = Math.floor(currentMs / 60_000);
     const minuteStart = minute * 60_000;
 
-    const due = dueAt(runnable, cursor, (p) => resolverForCalls.resolve(p));
+    const due = dueAt(runnable, cursor, (p) => resolver.resolve(p));
     const dueNames = new Set(due.map((j) => j.name));
 
     // Only T0 can have missed slots: from then on the simulation itself fires every slot.
     let catches: { job: Job<T>; slot: Date }[] = [];
     if (isFirstTick && Object.keys(lastFired).length > 0) {
-      catches = catchUpFires(runnable, lastFired, cursor, (p) => resolverForCalls.resolve(p), (p) => resolveLookback(p, cursor)).filter(
+      catches = catchUpFires(runnable, lastFired, cursor, (p) => resolver.resolve(p), (p) => resolveLookback(p, cursor)).filter(
         (f) => !dueNames.has(f.job.name),
       );
     }
@@ -199,7 +200,7 @@ export function simulateSchedule<T = unknown>(options: SimulateOptions<T>): Simu
       dispatches.push(item);
     }
 
-    const wake = nextWake(runnable, cursor, (p) => resolverForCalls.resolve(p), Infinity);
+    const wake = nextWake(runnable, cursor, (p) => resolver.resolve(p), Infinity);
     if (wake === Infinity) {
       break;
     }

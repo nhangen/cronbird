@@ -342,10 +342,7 @@ describe("simulateSchedule — skipped-job diagnostics", () => {
       matcher: m,
     });
 
-    expect(report.warnings).toEqual([
-      'typo: invalid cron schedule "0 25 * * *"',
-      'ok: invalid cron schedule "0 * * * *"',
-    ]);
+    expect(report.warnings).toEqual(['typo: invalid cron schedule "0 25 * * *"']);
     expect(report.dispatches.map((x) => x.job)).toEqual(["ok", "ok"]);
   });
 
@@ -360,8 +357,6 @@ describe("simulateSchedule — skipped-job diagnostics", () => {
       matcher: m,
     });
 
-    expect(report.warnings).toEqual([
-      'feb30: invalid cron schedule "0 0 30 2 *"',
-    ]);
+    expect(report.warnings).toEqual(['feb30: schedule "0 0 30 2 *" never fires']);
   });
 });
