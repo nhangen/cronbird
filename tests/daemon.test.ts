@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { lookbackForSchedule } from "../src/core/catchup";
 import { createMatcher, matcherForJob } from "../src/core/cron";
-import type { Job, Topology, Heartbeat, CompletionRecord, RunRecord } from "../src/core/types";
+import type { Job, Topology, Heartbeat, CompletionRecord, RunRecord, DispatchOutcome } from "../src/core/types";
 import { type DaemonDeps, runForever } from "../src/core/daemon";
 import { CATCHUP_LOOKBACK_CAP_MS, CATCHUP_LOOKBACK_FLOOR_MS, FATAL_EXIT_CODE } from "../src/core/constants";
 
@@ -82,6 +82,10 @@ interface HarnessOpts {
   dependencies?: (job: Job<unknown>) => string[];
   recordRun?: (record: RunRecord) => void;
   dispatchThrows?: (name: string) => boolean;
+  /** Overlap-guard outcome records (jobName → {ts, exitCode}). Default: empty (guard disabled). */
+  loadOutcomes?: () => Record<string, DispatchOutcome>;
+  /** Overlap-guard threshold in ms. Default: 30 000. */
+  maxDispatchWindowMs?: number;
 }
 
 function harness(opts: HarnessOpts) {
@@ -169,6 +173,8 @@ function harness(opts: HarnessOpts) {
     cooldownSeconds: opts.cooldownSeconds ?? (() => 0),
     dependencies: opts.dependencies ?? (() => []),
     recordRun: opts.recordRun ?? ((rec) => records.push(rec)),
+    loadOutcomes: opts.loadOutcomes ?? (() => ({})),
+    maxDispatchWindowMs: opts.maxDispatchWindowMs ?? 30_000,
   };
   return {
     deps,
@@ -1221,5 +1227,117 @@ describe("run history recording — Ticket #3", () => {
     expect(h.records.length).toBe(1);
     expect(h.records[0]!.startedAt).toBe(6_000);
     expect(h.logs.some((l) => l.includes("nine") && l.includes("no running slot"))).toBe(true);
+  });
+});
+
+describe("overlap guard (skip-if-running)", () => {
+  test("skips a due job whose outcome ts is within the window", async () => {
+    const now = d("2026-06-01T09:00:00Z").getTime();
+    const h = harness({
+      nows: [d("2026-06-01T09:00:00Z")],
+      playbooks: [pb({ name: "nine", cronSchedule: "0 9 * * *" })],
+      loadOutcomes: () => ({ nine: { ts: now - 10_000, exitCode: 0 } }),
+      maxDispatchWindowMs: 30_000,
+    });
+    await runForever(h.deps);
+    expect(h.dispatched).toEqual([]);
+    expect(h.logs.some((l) => l.includes("overlap guard skip") && l.includes("nine"))).toBe(true);
+  });
+
+  test("dispatches a due job whose outcome ts is outside the window", async () => {
+    const now = d("2026-06-01T09:00:00Z").getTime();
+    const h = harness({
+      nows: [d("2026-06-01T09:00:00Z")],
+      playbooks: [pb({ name: "nine", cronSchedule: "0 9 * * *" })],
+      loadOutcomes: () => ({ nine: { ts: now - 31_000, exitCode: 0 } }),
+      maxDispatchWindowMs: 30_000,
+    });
+    await runForever(h.deps);
+    expect(h.dispatched).toEqual(["nine"]);
+  });
+
+  test("skips only the job with a fresh outcome; others dispatch normally", async () => {
+    const now = d("2026-06-01T09:00:00Z").getTime();
+    const h = harness({
+      nows: [d("2026-06-01T09:00:00Z")],
+      playbooks: [
+        pb({ name: "nine", cronSchedule: "0 9 * * *" }),
+        pb({ name: "ten", cronSchedule: "0 9 * * *" }),
+      ],
+      loadOutcomes: () => ({ nine: { ts: now - 5_000, exitCode: 0 } }),
+      maxDispatchWindowMs: 30_000,
+    });
+    await runForever(h.deps);
+    expect(h.dispatched).toEqual(["ten"]);
+    expect(h.logs.some((l) => l.includes("overlap guard skip") && l.includes("nine"))).toBe(true);
+  });
+
+  test("no outcome records: guard is a no-op and all due jobs dispatch", async () => {
+    const h = harness({
+      nows: [d("2026-06-01T09:00:00Z")],
+      playbooks: [pb({ name: "nine", cronSchedule: "0 9 * * *" })],
+      loadOutcomes: () => ({}),
+      maxDispatchWindowMs: 30_000,
+    });
+    await runForever(h.deps);
+    expect(h.dispatched).toEqual(["nine"]);
+  });
+
+  test("heartbeat persists outcome records for the current tick", async () => {
+    const now = d("2026-06-01T09:00:00Z").getTime();
+    const outcomes = { nine: { ts: now - 5_000, exitCode: 0 } };
+    const h = harness({
+      nows: [d("2026-06-01T09:00:00Z")],
+      playbooks: [pb({ name: "nine", cronSchedule: "0 9 * * *" })],
+      loadOutcomes: () => outcomes,
+      maxDispatchWindowMs: 30_000,
+    });
+    await runForever(h.deps);
+    expect(h.heartbeats).toHaveLength(1);
+    expect(h.heartbeats[0]!.outcome).toEqual(outcomes);
+  });
+
+  test("maxDispatchWindowMs is configurable: a wider window skips more", async () => {
+    const now = d("2026-06-01T09:00:00Z").getTime();
+    // outcome at now-40s: outside default 30s window, inside 60s window
+    const h = harness({
+      nows: [d("2026-06-01T09:00:00Z")],
+      playbooks: [pb({ name: "nine", cronSchedule: "0 9 * * *" })],
+      loadOutcomes: () => ({ nine: { ts: now - 40_000, exitCode: 0 } }),
+      maxDispatchWindowMs: 60_000,
+    });
+    await runForever(h.deps);
+    expect(h.dispatched).toEqual([]);
+    expect(h.logs.some((l) => l.includes("overlap guard skip") && l.includes("nine"))).toBe(true);
+  });
+
+  test("catch-up slots are also subject to the overlap guard", async () => {
+    // Two missed minutes ago; catch-up would replay them, but the guard skips.
+    const now = d("2026-06-01T09:00:00Z").getTime();
+    const h = harness({
+      nows: [d("2026-06-01T09:00:00Z")],
+      playbooks: [pb({ name: "ev", cronSchedule: "* * * * *" })],
+      startHeartbeat: {
+        ts: 0,
+        host: "ml-1",
+        runnable_count: 0,
+        next_wake_ts: 0,
+        last_dispatch: [],
+        dispatched_minute: {},
+        last_fired: { ev: now - 120_000 }, // last fired 2 min ago → catch-up fires 08:58 and 08:59
+        queue: [],
+        running: {},
+        last_completed: {},
+        attempts: {},
+        last_run: {},
+        last_success: {},
+      },
+      loadOutcomes: () => ({ ev: { ts: now - 5_000, exitCode: 0 } }),
+      maxDispatchWindowMs: 30_000,
+      lookback: 600_000, // allow 10 min lookback so catch-up slots are eligible
+    });
+    await runForever(h.deps);
+    expect(h.dispatched).toEqual([]);
+    expect(h.logs.some((l) => l.includes("overlap guard skip") && l.includes("ev"))).toBe(true);
   });
 });

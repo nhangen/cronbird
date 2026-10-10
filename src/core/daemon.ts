@@ -17,13 +17,7 @@ import { matcherForJob, type CronMatcher } from "./cron";
 import { failedJobs, isEligible, transitiveUpstreamFailed, validateDependencies } from "./dependencies";
 import { RunQueue } from "./run-queue";
 import { dueAt, nextWake, selectRunnable } from "./select";
-import type { CompletionRecord, DispatchRecord, Heartbeat, Job, RunRecord, Topology } from "./types";
-
-/** Outcome record emitted by the dispatch wrapper for each job. */
-export interface DispatchOutcome {
-  ts: number;           // Unix timestamp when the run started
-  exit_code: number;    // Exit code of the last completion (0 = success)
-}
+import type { CompletionRecord, DispatchOutcome, DispatchRecord, Heartbeat, Job, RunRecord, Topology } from "./types";
 
 const MINUTE_MS = 60_000;
 /** How many recent dispatches to retain in the heartbeat for observability. */
@@ -87,11 +81,19 @@ export interface DaemonDeps<T = unknown> {
    */
   readCompletions(): { running: Record<string, number>; done: Record<string, CompletionRecord> };
   /**
-   * Load job outcomes from the outcome directory (per-job JSON files written
-   * by the dispatch wrapper). Returns a map of jobName → DispatchOutcome or
-   * empty object if no outcomes exist or the directory is unreadable.
+   * Load job outcomes (per-job `{ts, exitCode}` records) for the overlap
+   * guard. `ts` is the run's start time; an outcome whose `ts` is within
+   * `maxDispatchWindowMs` of now is treated as "in-flight" and the job is
+   * skipped this tick. Optional — when absent, the overlap guard is disabled
+   * and behavior matches the pre-guard dispatch.
    */
-  loadOutcomes(): Record<string, DispatchOutcome>;
+  loadOutcomes?(): Record<string, DispatchOutcome>;
+  /**
+   * Overlap-guard threshold in ms. A job whose outcome `ts` is within this
+   * window of `now` is considered in-flight and skipped. Optional; defaults
+   * to 30_000 (30 s) when omitted.
+   */
+  maxDispatchWindowMs?: number;
   /**
    * Product-supplied per-job cooldown in seconds. A job whose last completion
    * (from `readCompletions().done`) is more recent than its cooldown is NOT
@@ -281,20 +283,11 @@ export function runOneTick<T>(deps: DaemonDeps<T>, state: TickState<T>): number 
   for (const p of runnable) nextLastFired[p.name] = state.lastFired[p.name] ?? now.getTime();
   // Read run state once per tick: drives completion processing, the cooldown
   // gate (below), and the drain. The overlap gate checks outcomes to skip
-  // queueing jobs still running from earlier dispatches — prevents stacking
-  // multiple runs for a single execution slot.
-  const outcomes = deps.loadOutcomes();
+  // queueing jobs whose most recent dispatch is still in-flight — prevents
+  // stacking multiple runs for a single execution slot.
+  const outcomes: Record<string, DispatchOutcome> = deps.loadOutcomes ? deps.loadOutcomes() : {};
   const completions = deps.readCompletions();
-
-  // Overlap gate: jobs with an in-flight or recently-completed outcome are
-  // skipped at this tick. We use outcome timestamps to detect running state
-  // — a record whose ts is within maxDispatchWindowMs of now indicates a job
-  // that was dispatched but hasn't reported completion yet (or just completed),
-  // so we don't requeue it into the same slot.
-  const overlapThreshold = deps.maxDispatchWindowMs ?? 30_000; // 30s default
-  const isInFlightOrRecent = (job: Job<unknown>, outcome: DispatchOutcome): boolean => {
-    return outcome.ts !== undefined && now.getTime() - outcome.ts < overlapThreshold;
-  };
+  const overlapThresholdMs = deps.maxDispatchWindowMs ?? 30_000;
 
   // Process fresh completions (done.ts newer than what we've accounted for):
   // a success resets the retry counter and stamps last_success; a failure
@@ -349,15 +342,16 @@ export function runOneTick<T>(deps: DaemonDeps<T>, state: TickState<T>): number 
     const done = completions.done[job.name];
     return done !== undefined && now.getTime() - done.ts < deps.cooldownSeconds(job) * 1000;
   };
-  // Overlap gate: jobs with an in-flight or recently-completed outcome from disk
-  // are skipped. This prevents stacking multiple runs for a single execution slot
-  // when the dispatch wrapper hasn't yet reported completion back to the scheduler.
+  // Overlap gate: a job whose most recent outcome is still within
+  // `overlapThresholdMs` of now is treated as in-flight and skipped this tick.
+  // `ts` is the run's start time (not completion), so a long-running job stays
+  // in-flight for its whole lifetime, and a just-completed job is briefly
+  // protected from a same-minute re-dispatch. No outcome record → allow
+  // (first run ever, or the record was pruned/stale).
   const overlapGuardCheck = (job: Job<T>): boolean => {
     const outcome = outcomes[job.name];
-    if (!outcome) return false; // no outcome record → allow dispatch (first run ever, or stale record)
-    // Use maxDispatchWindowMs threshold to detect "still running" vs. "completed but not yet recorded"
-    // - If the job was dispatched recently (< overlapThreshold), skip it (it's in-flight)
-    return now.getTime() - outcome.ts < deps.maxDispatchWindowMs ?? overlapThreshold;
+    if (!outcome) return false;
+    return now.getTime() - outcome.ts < overlapThresholdMs;
   };
   // ENQUEUE (not dispatch) due + catch-up slots by priority; stamp last_fired at
   // enqueue so the queued entry is the single slot owner. Draining happens after
@@ -494,6 +488,7 @@ export function runOneTick<T>(deps: DaemonDeps<T>, state: TickState<T>): number 
     last_dispatch: [...state.recent],
     dispatched_minute: Object.fromEntries(state.guard),
     last_fired: state.lastFired,
+    outcome: outcomes,
     queue: state.queue.snapshot().map((e) => ({ ...e, slotTs: state.slotTsByName[e.name] ?? now.getTime() })),
     running: completions.running,
     running_slots: Object.fromEntries(

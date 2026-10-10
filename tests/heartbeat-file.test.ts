@@ -35,6 +35,7 @@ const hb: Heartbeat = {
   attempts: {},
   last_run: {},
   last_success: {},
+  outcome: {},
 };
 
 describe("heartbeat round-trip", () => {

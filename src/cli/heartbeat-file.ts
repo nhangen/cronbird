@@ -9,22 +9,21 @@
  */
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
-import type { CompletionRecord, DispatchRecord, Heartbeat, QueueEntry, RunningSlotInfo } from "../core/index";
+import type { CompletionRecord, DispatchOutcome, DispatchRecord, Heartbeat, QueueEntry, RunningSlotInfo } from "../core/index";
 
-export function readHeartbeatFile(path: string): { value: Heartbeat | null; warnings: string[]; outcome: Record<string, DispatchOutcome> } {
-  if (!existsSync(path)) return { value: null, warnings: [], outcome: {} };
-  const warn = (): { value: Heartbeat | null; warnings: string[]; outcome: Record<string, DispatchOutcome> } => ({
+export function readHeartbeatFile(path: string): { value: Heartbeat | null; warnings: string[] } {
+  if (!existsSync(path)) return { value: null, warnings: [] };
+  const warn = (): { value: Heartbeat | null; warnings: string[] } => ({
     value: null,
     warnings: [`heartbeat file present but unparseable: ${path}`],
-    outcome: {},
   });
   let text: string;
   try {
     text = readFileSync(path, "utf8");
   } catch (e) {
     const code = (e as NodeJS.ErrnoException).code ?? "unknown";
-    if (code === "ENOENT") return { value: null, warnings: [], outcome: {} };
-    return { value: null, warnings: [`heartbeat file present but unreadable: ${path} (${code})`], outcome: {} };
+    if (code === "ENOENT") return { value: null, warnings: [] };
+    return { value: null, warnings: [`heartbeat file present but unreadable: ${path} (${code})`] };
   }
   let raw: unknown;
   try {
@@ -63,7 +62,9 @@ export function readHeartbeatFile(path: string): { value: Heartbeat | null; warn
       attempts: numericMap(r.attempts),
       last_run: numericMap(r.last_run),
       last_success: numericMap(r.last_success),
-      // Outcome records keyed by playbook name. Missing or malformed entries default to empty object.
+      // Outcome records keyed by playbook name. Missing or malformed entries
+      // read as empty so the overlap guard starts with a clean state — never
+      // crashes at boot, never fabricates outcomes.
       outcome: outcomeRecords(r.outcome),
     },
     warnings: [],

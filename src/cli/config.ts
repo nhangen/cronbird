@@ -102,8 +102,8 @@ export function parseConfig(raw: string, env: Record<string, string | undefined>
       const lp = optString(o, "lockPath");
       return lp ? expandTilde(lp, home) : null;
     })(),
-    const historyPath: (() => { const hp = optString(o, "historyPath"); return hp ? expandTilde(hp, home) : null; })() ?? null;
-  const outcomeDir: (() => { const od = optString(o, "outcomeDir"); return od ? expandTilde(od, home) : null; })() ?? null;
+    historyPath: (() => { const hp = optString(o, "historyPath"); return hp ? expandTilde(hp, home) : null; })(),
+    outcomeDir: (() => { const od = optString(o, "outcomeDir"); return od ? expandTilde(od, home) : null; })(),
     maxHistoryRecords: optPosInt(o, "maxHistoryRecords"),
     historyRetentionMs: optPosInt(o, "historyRetentionMs"),
     dispatchCommand: reqStringArray(o, "dispatchCommand"),
@@ -111,5 +111,6 @@ export function parseConfig(raw: string, env: Record<string, string | undefined>
     maxSleepMs: reqPosInt(o, "maxSleepMs"),
     catchupLookbackFloorMs: reqPosInt(o, "catchupLookbackFloorMs"),
     catchupLookbackCapMs: reqPosInt(o, "catchupLookbackCapMs"),
+    maxDispatchWindowMs: optPosInt(o, "maxDispatchWindowMs"),
   };
 }
