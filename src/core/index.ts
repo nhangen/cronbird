@@ -7,6 +7,8 @@ export { runForever } from "./daemon";
 export type { DaemonDeps } from "./daemon";
 export { computeStatus } from "./status";
 export type { JobStatus, StatusReport, StatusOptions, JobHealth } from "./status";
+export { explainJob } from "./explain";
+export type { ExplainReport, ExplainGate, ExplainOptions } from "./explain";
 export { queryRunHistory, pruneRunHistory, mergeRunRecords, runRecordKey } from "./history";
 export type { RunHistoryQuery, RunHistoryRetentionOptions } from "./history";
 export { simulateSchedule } from "./simulate";

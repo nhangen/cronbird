@@ -18,4 +18,6 @@ export type { SimulateCliDeps } from "./simulate";
 export { usageText, HELP_TOKENS } from "./usage";
 export { acquireFlock } from "./flock";
 export type { FlockHandle } from "./flock";
-export type { RunRecord, RunOutcome } from "../core/index";
+export { explainJob } from "../core/index";
+export type { ExplainReport, ExplainGate, ExplainOptions, RunRecord, RunOutcome } from "../core/index";
+

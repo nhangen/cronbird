@@ -5,15 +5,15 @@
  * projection of {@link computeStatus}. No scheduling, no writes.
  */
 import { readFileSync } from "node:fs";
-import { computeStatus, createMatcher, queryRunHistory, STALE_EXIT_CODE, type JobStatus, type RunRecord, type StatusReport } from "../core/index";
+import { computeStatus, createMatcher, explainJob, queryRunHistory, STALE_EXIT_CODE, type JobStatus, type RunRecord, type StatusReport } from "../core/index";
 import { parseConfig } from "./config";
 import { readHeartbeatFile } from "./heartbeat-file";
 import { readRunHistoryFile } from "./history-file";
 import { fileEnabledProvider, fileJobProvider, fileTopologyProvider } from "./providers";
 
-export type StatusSubcommand = "status" | "list" | "next-runs" | "history";
+export type StatusSubcommand = "status" | "list" | "next-runs" | "history" | "explain";
 
-export const STATUS_SUBCOMMANDS: ReadonlySet<string> = new Set(["status", "list", "next-runs", "history"]);
+export const STATUS_SUBCOMMANDS: ReadonlySet<string> = new Set(["status", "list", "next-runs", "history", "explain"]);
 
 export interface StatusCliDeps {
   now: () => Date;
@@ -24,12 +24,14 @@ export interface StatusCliDeps {
 
 interface ParsedArgs {
   configPath: string | undefined;
+  jobName: string | undefined;
   json: boolean;
   withinMs: number | null;
   job: string | undefined;
   since: number | null;
   until: number | null;
   limit: number | null;
+  count: number | null;
 }
 
 /** Parse `Nd`/`Nh`/`Nm`/`Ns` into ms. Returns null on any other shape. */
@@ -60,6 +62,7 @@ function parseTimeFilter(s: string | undefined, nowMs: number): number | null {
 function usage(sub: StatusSubcommand): string {
   if (sub === "next-runs") return `usage: cronbird next-runs <config.json> [--json] [--within <dur>]\n`;
   if (sub === "history") return `usage: cronbird history <config.json> [--json] [--job <name>] [--since <time>] [--until <time>] [--limit <n>]\n`;
+  if (sub === "explain") return `usage: cronbird explain <config.json> <job-name> [--json] [--count <n>]\n`;
   return `usage: cronbird ${sub} <config.json> [--json]\n`;
 }
 
@@ -67,7 +70,26 @@ export function runStatusCommand(sub: StatusSubcommand, args: string[], deps: St
   const parsed = parseFlags(sub, args, deps);
   if (typeof parsed === "number") return parsed;
 
-  const configPath = parsed.configPath ?? deps.env.CRONBIRD_CONFIG;
+  let configPath = parsed.configPath ?? deps.env.CRONBIRD_CONFIG;
+  let jobName = parsed.jobName;
+
+  if (sub === "explain") {
+    // Accommodate both `cronbird explain <config.json> <job-name>` and
+    // `cronbird explain <job-name> <config.json>` (issue #16), as well as
+    // `CRONBIRD_CONFIG=... cronbird explain <job-name>`.
+    if (parsed.configPath && parsed.jobName) {
+      if (parsed.jobName.endsWith(".json") && !parsed.configPath.endsWith(".json")) {
+        configPath = parsed.jobName;
+        jobName = parsed.configPath;
+      }
+    } else if (parsed.configPath && !parsed.jobName && deps.env.CRONBIRD_CONFIG) {
+      if (!parsed.configPath.endsWith(".json")) {
+        configPath = deps.env.CRONBIRD_CONFIG;
+        jobName = parsed.configPath;
+      }
+    }
+  }
+
   if (!configPath) {
     deps.err(usage(sub));
     return 2;
@@ -98,6 +120,42 @@ export function runStatusCommand(sub: StatusSubcommand, args: string[], deps: St
       deps.err(`error: could not read run history ${historyPath}: ${e instanceof Error ? e.message : String(e)}\n`);
       return 1;
     }
+  }
+
+  if (sub === "explain") {
+    if (!jobName) {
+      deps.err(`error: explain requires a job name — usage: cronbird explain <config.json> <job-name>\n`);
+      return 2;
+    }
+    let report: import("../core/index").ExplainReport;
+    try {
+      const cfg = parseConfig(readFileSync(configPath, "utf8"), deps.env);
+      const registryResult = fileJobProvider(cfg.registryPath)();
+      const enabledResult = fileEnabledProvider(cfg.enabledPath)();
+      const topologyResult = fileTopologyProvider(cfg.topologyPath)();
+      const heartbeatResult = readHeartbeatFile(cfg.heartbeatPath);
+
+      for (const { warnings } of [registryResult, enabledResult, topologyResult, heartbeatResult]) {
+        for (const w of warnings) deps.err(`warning: ${w}\n`);
+      }
+
+      report = explainJob({
+        jobs: registryResult.jobs,
+        name: jobName,
+        host: cfg.hostname,
+        enabled: enabledResult.value,
+        owners: topologyResult.value?.owners ?? {},
+        heartbeat: heartbeatResult.value,
+        matcher: createMatcher(),
+        now: deps.now(),
+        options: { count: parsed.count ?? 5 },
+      });
+    } catch (e) {
+      deps.err(`${e instanceof Error ? e.message : String(e)}\n`);
+      return 1;
+    }
+    renderExplain(report, parsed, deps);
+    return 0;
   }
 
   let report: StatusReport;
@@ -158,6 +216,7 @@ function parseFlags(sub: StatusSubcommand, args: string[], deps: StatusCliDeps):
   let since: number | null = null;
   let until: number | null = null;
   let limit: number | null = null;
+  let count: number | null = null;
   const positional: string[] = [];
 
   for (let i = 0; i < args.length; i++) {
@@ -222,6 +281,18 @@ function parseFlags(sub: StatusSubcommand, args: string[], deps: StatusCliDeps):
         return 2;
       }
       limit = n;
+    } else if (a === "--count") {
+      if (sub !== "explain") {
+        deps.err(`--count is only valid for explain\n`);
+        return 2;
+      }
+      const val = args[++i];
+      const n = Number(val);
+      if (!Number.isInteger(n) || n < 0) {
+        deps.err(`invalid --count: ${JSON.stringify(val)} (must be a non-negative integer)\n`);
+        return 2;
+      }
+      count = n;
     } else if (a.startsWith("--")) {
       deps.err(`unknown flag: ${a}\n`);
       return 2;
@@ -230,7 +301,7 @@ function parseFlags(sub: StatusSubcommand, args: string[], deps: StatusCliDeps):
     }
   }
 
-  return { configPath: positional[0], json, withinMs, job, since, until, limit };
+  return { configPath: positional[0], jobName: positional[1], json, withinMs, job, since, until, limit, count };
 }
 
 function render(sub: StatusSubcommand, report: StatusReport, parsed: ParsedArgs, deps: StatusCliDeps): void {
@@ -342,6 +413,41 @@ function renderHistory(records: RunRecord[], parsed: ParsedArgs, deps: StatusCli
     ]);
   }
   deps.out(table(rows));
+}
+
+function renderExplain(report: import("../core/index").ExplainReport, parsed: ParsedArgs, deps: StatusCliDeps): void {
+  if (parsed.json) {
+    deps.out(JSON.stringify(report, null, 2) + "\n");
+    return;
+  }
+  // Human-readable rendering: the headline verdict, the gate table, and the
+  // fire times. The gate table is the core of #16 — it makes the opaque
+  // "why didn't my job run" question one command.
+  const verdict = report.runnable ? "RUNNABLE" : "NOT RUNNABLE";
+  deps.out(`job=${report.name}  host=${report.host}  ${verdict}\n\n`);
+  deps.out(`schedule:       ${report.schedule}\n`);
+  deps.out(`scope:          ${report.scope}\n`);
+  deps.out(`active:         ${yesno(report.isActive)}\n`);
+  deps.out(`schedule valid: ${yesno(report.scheduleValid)}\n\n`);
+
+  const gateRows: string[][] = [["GATE", "PASSED", "REASON"]];
+  for (const g of report.gates) {
+    gateRows.push([g.gate, g.passed ? "yes" : "no", g.reason]);
+  }
+  deps.out(table(gateRows) + "\n");
+
+  const nowMs = report.now;
+  const lastFired = report.lastFired === null ? "-" : fmtRelative(report.lastFired - nowMs);
+  deps.out(`last fired: ${lastFired}\n`);
+  if (report.nextFires.length === 0) {
+    deps.out(`next fires: (none — not runnable, schedule invalid, or never fires again)\n`);
+  } else {
+    const fireRows: string[][] = [["#", "NEXT FIRE", "IN"]];
+    report.nextFires.forEach((ts, i) => {
+      fireRows.push([String(i + 1), fmtTs(ts), fmtRelative(ts - nowMs)]);
+    });
+    deps.out(table(fireRows));
+  }
 }
 
 function yesno(b: boolean): string {

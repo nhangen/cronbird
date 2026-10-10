@@ -150,9 +150,10 @@ cronbird next-runs <config.json> [--within 2h] # runnable jobs sorted by next fi
 cronbird status    <config.json>              # per-job health + daemon heartbeat age
 cronbird history   <config.json> [options]    # query execution run history (job, since, until, limit)
 cronbird simulate  <config.json> --from <T0> --to <T1> # dry-run / fast-forward the schedule
+cronbird explain   <config.json> <job-name>   # why a job is or isn't runnable here (gate table + next fires)
 ```
 
-All five accept `--json` for machine-readable output. `cronbird help` (or `--help` / `-h`) prints this list; running `cronbird <config.json>` with no subcommand starts the daemon as before.
+All six accept `--json` for machine-readable output. `cronbird help` (or `--help` / `-h`) prints this list; running `cronbird <config.json>` with no subcommand starts the daemon as before.
 
 `status` classifies each job's `HEALTH`:
 
@@ -178,6 +179,47 @@ morning-scan  single  yes       -          in 14h 42m  never-fired
 ```
 
 The projection is built by `computeStatus` in `cronbird/core` (pure, clock-injected) — any consumer can render its own view over the same data. When `historyPath` is configured, `computeStatus` incorporates the most recent run record (`lastRun`) into each job status.
+
+### Explain a job
+
+`cronbird explain <config.json> <job-name>` dissolves the "why didn't my job run" debugging burden into one command. It evaluates each gating criterion in order and prints a human-readable gate table, the last recorded fire, and upcoming fires:
+
+```bash
+cronbird explain ./cronbird.config.json morning-scan
+cronbird explain ./cronbird.config.json morning-scan --count 3
+cronbird explain ./cronbird.config.json morning-scan --json
+```
+
+Gates evaluated:
+1. `active` — `isActive === true` (invariant gate for all jobs).
+2. `scope` — informational declared scope (`"each"` or `"single"`).
+3. `enabled-membership` — for `scope: "each"`, verifies the job appears in this host's enabled set (`enabledPath`).
+4. `owner-match` — for `scope: "single"`, verifies the job's owner in `topology.owners` matches this host's `hostname`.
+
+Example:
+
+```
+$ cronbird explain ./cronbird.config.json morning-scan
+job=morning-scan  host=ml-1  RUNNABLE
+
+schedule:       0 6 * * *
+scope:          each
+active:         yes
+schedule valid: yes
+
+GATE                PASSED  REASON
+active              yes     job is active
+scope               yes     scope is "each" (runs on every host that enables it)
+enabled-membership  yes     job is in this host's enabled set ("ml-1")
+owner-match         yes     not applicable — scope is "each" (gated by enabled-membership)
+
+last fired: 2h ago
+#  NEXT FIRE                 IN
+1  2026-10-10T06:00:00.000Z  in 8h 7m
+2  2026-10-11T06:00:00.000Z  in 1d 8h
+```
+
+If a job is not runnable, the gate table shows which gate failed and why (e.g. `owner is "host-b" (not this host "ml-1")` or `job is NOT in this host's enabled set ("ml-1")`). If the schedule cannot be parsed, `schedule valid` reports `no` and next fires are omitted.
 
 ### Run history
 

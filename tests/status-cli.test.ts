@@ -9,6 +9,7 @@ afterAll(() => rmSync(dir, { recursive: true, force: true }));
 
 const registryPath = join(dir, "registry.json");
 const enabledPath = join(dir, "enabled.json");
+const topologyPath = join(dir, "topology.json");
 const heartbeatPath = join(dir, "heartbeat.json");
 const configPath = join(dir, "config.json");
 
@@ -23,10 +24,13 @@ beforeAll(() => {
         { name: "alpha", cronSchedule: "0 * * * *", isActive: true, hosts: ["*"], scope: "each", metadata: {} },
         { name: "bravo", cronSchedule: "0 6 * * *", isActive: true, hosts: ["*"], scope: "each", metadata: {} },
         { name: "off", cronSchedule: "0 * * * *", isActive: false, hosts: ["*"], scope: "each", metadata: {} },
+        { name: "solo", cronSchedule: "0 * * * *", isActive: true, hosts: ["*"], scope: "single", metadata: {} },
+        { name: "foreign", cronSchedule: "0 * * * *", isActive: true, hosts: ["*"], scope: "single", metadata: {} },
       ],
     }),
   );
   writeFileSync(enabledPath, JSON.stringify(["alpha", "bravo", "off"]));
+  writeFileSync(topologyPath, JSON.stringify({ hosts: ["ml-1", "mb-pro"], owners: { solo: "ml-1", foreign: "mb-pro" } }));
   writeFileSync(
     heartbeatPath,
     JSON.stringify({
@@ -42,7 +46,7 @@ beforeAll(() => {
       hostname: "ml-1",
       registryPath,
       enabledPath,
-      topologyPath: null,
+      topologyPath,
       heartbeatPath,
       syncedHeartbeatDir: null,
       dispatchCommand: ["./run.sh"],
@@ -54,7 +58,7 @@ beforeAll(() => {
   );
 });
 
-function run(sub: "status" | "list" | "next-runs" | "history", args: string[]) {
+function run(sub: "status" | "list" | "next-runs" | "history" | "explain", args: string[]) {
   const out: string[] = [];
   const err: string[] = [];
   const deps: StatusCliDeps = {
@@ -84,7 +88,7 @@ describe("list", () => {
     expect(code).toBe(0);
     const parsed = JSON.parse(out);
     expect(Array.isArray(parsed.jobs)).toBe(true);
-    expect(parsed.jobs.map((j: { name: string }) => j.name).sort()).toEqual(["alpha", "bravo", "off"]);
+    expect(parsed.jobs.map((j: { name: string }) => j.name).sort()).toEqual(["alpha", "bravo", "foreign", "off", "solo"]);
   });
 });
 
@@ -584,3 +588,116 @@ describe("history subcommand", () => {
     expect(alpha.lastRun.outcome).toBe("failure"); // newest alpha run was failure
   });
 });
+
+describe("explain", () => {
+  test("runnable each-job → RUNNABLE verdict, gate table, next fires", () => {
+    const { code, out } = run("explain", ["alpha"]);
+    expect(code).toBe(0);
+    expect(out).toContain("RUNNABLE");
+    expect(out).toContain("alpha");
+    expect(out).toContain("GATE");
+    expect(out).toContain("enabled-membership");
+    // next fires populated (alpha fires hourly; NOW is 12:00Z → 13:00Z is next)
+    expect(out).toContain("13:00:00");
+  });
+
+  test("not-runnable each-job → NOT RUNNABLE, enabled gate fails", () => {
+    // "bravo" is in the enabled set, so it IS runnable. Use a job that's not enabled.
+    // Actually bravo IS enabled. Let's check "off" (inactive) instead.
+    const { code, out } = run("explain", ["off"]);
+    expect(code).toBe(0);
+    expect(out).toContain("NOT RUNNABLE");
+    // inactive → active gate fails
+    const activeLine = out.split("\n").find((l) => l.includes("active") && l.includes("inactive"));
+    expect(activeLine).toBeDefined();
+  });
+
+  test("single-job owned by this host → RUNNABLE", () => {
+    const { code, out } = run("explain", ["solo"]);
+    expect(code).toBe(0);
+    expect(out).toContain("RUNNABLE");
+    expect(out).toContain("owner-match");
+  });
+
+  test("single-job owned by another host → NOT RUNNABLE, owner gate fails", () => {
+    const { code, out } = run("explain", ["foreign"]);
+    expect(code).toBe(0);
+    expect(out).toContain("NOT RUNNABLE");
+    // owner gate reason mentions "mb-pro" (the foreign owner)
+    expect(out).toContain("mb-pro");
+  });
+
+  test("unknown job → exit 1, error message", () => {
+    const { code, err } = run("explain", ["nonexistent"]);
+    expect(code).toBe(1);
+    expect(err).toContain("unknown job");
+  });
+
+  test("missing job name → exit 2, usage", () => {
+    const { code, err } = run("explain", []);
+    expect(code).toBe(2);
+    expect(err).toContain("job name");
+  });
+
+  test("--json emits parseable ExplainReport", () => {
+    const { code, out } = run("explain", ["alpha", "--json"]);
+    expect(code).toBe(0);
+    const parsed = JSON.parse(out);
+    expect(parsed.name).toBe("alpha");
+    expect(parsed.runnable).toBe(true);
+    expect(Array.isArray(parsed.gates)).toBe(true);
+    expect(parsed.gates.length).toBe(4);
+    expect(Array.isArray(parsed.nextFires)).toBe(true);
+    expect(parsed.nextFires.length).toBe(5);
+    expect(parsed.lastFired).toBe(NOW_MS);
+  });
+
+  test("--count limits next fires", () => {
+    const { code, out } = run("explain", ["alpha", "--count", "2", "--json"]);
+    expect(code).toBe(0);
+    const parsed = JSON.parse(out);
+    expect(parsed.nextFires.length).toBe(2);
+  });
+
+  test("--count 0 → no next fires", () => {
+    const { code, out } = run("explain", ["alpha", "--count", "0", "--json"]);
+    expect(code).toBe(0);
+    const parsed = JSON.parse(out);
+    expect(parsed.nextFires).toEqual([]);
+  });
+
+  test("invalid --count → exit 2", () => {
+    const { code, err } = run("explain", ["alpha", "--count", "banana"]);
+    expect(code).toBe(2);
+    expect(err).toContain("--count");
+  });
+
+  test("reversed argument order: <job> <config.json> → exit 0, runs explain", () => {
+    const out: string[] = [];
+    const err: string[] = [];
+    const code = runStatusCommand("explain", ["alpha", configPath], {
+      now: () => NOW,
+      out: (s) => out.push(s),
+      err: (s) => err.push(s),
+      env: {},
+    });
+    expect(code).toBe(0);
+    expect(out.join("")).toContain("RUNNABLE");
+    expect(out.join("")).toContain("alpha");
+  });
+
+  test("CRONBIRD_CONFIG environment variable with single <job> argument → exit 0", () => {
+    const out: string[] = [];
+    const err: string[] = [];
+    const code = runStatusCommand("explain", ["alpha"], {
+      now: () => NOW,
+      out: (s) => out.push(s),
+      err: (s) => err.push(s),
+      env: { CRONBIRD_CONFIG: configPath },
+    });
+    expect(code).toBe(0);
+    expect(out.join("")).toContain("RUNNABLE");
+    expect(out.join("")).toContain("alpha");
+  });
+});
+
