@@ -236,4 +236,12 @@ describe("simulate CLI — end-to-end binary execution", () => {
     expect(r.exitCode).toBe(0);
     expect(r.stdout.toString()).toContain("hourly");
   });
+
+  test("piped output larger than a pipe buffer arrives complete", () => {
+    // A shell pipe to a slower reader is what exposes an exit before stdout
+    // drains; Bun.spawnSync reads fast enough to hide it.
+    const cmd = `"${process.execPath}" "${MAIN}" simulate "${configPath}" --from 2026-01-01T00:00:00Z --to 2027-01-01T00:00:00Z | grep -c hourly`;
+    const r = Bun.spawnSync(["sh", "-c", cmd], { stdout: "pipe", stderr: "pipe", env: { ...process.env, TZ: "UTC" } });
+    expect(r.stdout.toString().trim()).toBe(String(365 * 24 + 1));
+  });
 });

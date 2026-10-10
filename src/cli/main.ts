@@ -40,7 +40,10 @@ async function main(): Promise<void> {
       err: (s) => process.stderr.write(s),
       env: process.env,
     });
-    process.exit(code);
+    // process.exit() would drop stdout Bun hasn't flushed to a pipe yet; let
+    // the event loop drain it and exit with this code.
+    process.exitCode = code;
+    return;
   }
   if (sub && STATUS_SUBCOMMANDS.has(sub)) {
     const code = runStatusCommand(sub as StatusSubcommand, process.argv.slice(3), {
@@ -49,7 +52,8 @@ async function main(): Promise<void> {
       err: (s) => process.stderr.write(s),
       env: process.env,
     });
-    process.exit(code);
+    process.exitCode = code;
+    return;
   }
 
   const configPath = process.argv[2] ?? process.env.CRONBIRD_CONFIG;
