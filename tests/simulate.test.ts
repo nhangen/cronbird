@@ -195,6 +195,46 @@ describe("simulateSchedule — core fast-forward engine", () => {
     expect(report.dispatches[0]!.type).toBe("catchup");
     expect(report.dispatches[0]!.timeIso).toBe("2026-06-01T09:00:00.000Z");
     expect(new Date(report.dispatches[0]!.slotTs).toISOString()).toBe("2026-06-01T08:00:00.000Z");
+    expect(report.dispatches[0]!.time).toBe(Date.parse("2026-06-01T09:00:00Z"));
+  });
+
+  test("catch-up: a job due at T0 with a missed slot dispatches once, as due", () => {
+    const report = simulateSchedule({
+      from: d("2026-06-01T09:00:00Z"),
+      to: d("2026-06-01T09:00:00Z"),
+      host: "ml-1",
+      jobs: [pb({ name: "hourly", cronSchedule: "0 * * * *" })],
+      enabled: new Set(["hourly"]),
+      owners: {},
+      matcher: m,
+      initialLastFired: { hourly: d("2026-06-01T06:00:00Z").getTime() },
+      resolveLookback: () => 6 * 3_600_000,
+    });
+
+    expect(report.dispatches.map((x) => `${x.job}:${x.type}`)).toEqual(["hourly:due"]);
+  });
+
+  test("catch-up: initialHeartbeat seeds the baseline, and initialLastFired overrides it", () => {
+    const base = {
+      from: d("2026-06-01T09:00:00Z"),
+      to: d("2026-06-01T09:00:00Z"),
+      host: "ml-1",
+      jobs: [pb({ name: "eight", cronSchedule: "0 8 * * *" })],
+      enabled: new Set(["eight"]),
+      owners: {},
+      matcher: m,
+    };
+    const heartbeat = { last_fired: { eight: d("2026-05-31T08:00:00Z").getTime() } } as never;
+
+    const fromHeartbeat = simulateSchedule({ ...base, initialHeartbeat: heartbeat });
+    expect(fromHeartbeat.dispatches.map((x) => x.type)).toEqual(["catchup"]);
+
+    const overridden = simulateSchedule({
+      ...base,
+      initialHeartbeat: heartbeat,
+      initialLastFired: { eight: d("2026-06-01T08:00:00Z").getTime() },
+    });
+    expect(overridden.dispatches).toEqual([]);
   });
 });
 
