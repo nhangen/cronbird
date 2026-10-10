@@ -1,7 +1,10 @@
 export interface Job<T = unknown> {
     name: string;
-    /** 5-field cron expression, evaluated in the host's local timezone. */
+    /** 5-field cron expression, evaluated in the job's {@link timezone} (defaults to host-local). */
     cronSchedule: string;
+    /** IANA timezone the schedule is evaluated in (e.g. "America/New_York").
+     *  Omitted → host-local timezone (the daemon's `createMatcher()` default). */
+    timezone?: string;
     /** Only active jobs fire. */
     isActive: boolean;
     /** Declarative host-intent metadata (the CEO/registry layer emits it, default

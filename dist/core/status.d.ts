@@ -75,7 +75,7 @@ export declare function computeStatus<T>(args: {
     enabled: Set<string>;
     owners: Record<string, string>;
     heartbeat: Heartbeat | null;
-    matcher: CronMatcher;
+    matcherFor: (job: Job<T>) => CronMatcher;
     now: Date;
     options: StatusOptions;
     history?: RunRecord[];
