@@ -674,7 +674,16 @@ describe("explain", () => {
   test("unknown job → exit 1, error message", () => {
     const { code, err } = run("explain", ["nonexistent"]);
     expect(code).toBe(1);
-    expect(err).toContain("unknown job");
+    expect(err).toContain('error: unknown job: "nonexistent" (not in registry)');
+  });
+
+  test("missing config file → exit 1 with config error prefix", () => {
+    const err: string[] = [];
+    const code = runStatusCommand("explain", [join(dir, "no-such-config.json"), "alpha"], {
+      now: () => NOW, out: () => {}, err: (s) => err.push(s), env: {},
+    });
+    expect(code).toBe(1);
+    expect(err.join("")).toMatch(/^config error: /m);
   });
 
   test("missing job name → exit 2, usage", () => {
@@ -761,5 +770,22 @@ describe("explain — inputs beyond the shared fixture", () => {
     const status = JSON.parse(runWith(opts, "status", ["--json"]).out);
     expect(explained.lastFired).toBe(NOW_MS - 7_200_000);
     expect(explained.lastFired).toBe(status.jobs[0].lastFired);
+  });
+});
+
+describe("explain — registry problems are not reported as unknown jobs", () => {
+  test("unparseable registry → exit 1 naming the registry", () => {
+    const { code, err } = runWith({ registry: "{not json" }, "explain", ["alpha"]);
+    expect(code).toBe(1);
+    expect(err).toContain("error: registry could not be loaded");
+    expect(err).not.toContain("unknown job");
+  });
+
+  test("job row skipped by the parser → exit 1 with the skip reason", () => {
+    const registry = { jobs: [{ ...everyMinute("weird"), scope: "sometimes" }] };
+    const { code, err } = runWith({ registry }, "explain", ["weird"]);
+    expect(code).toBe(1);
+    expect(err).toContain('error: job "weird" is in the registry but was skipped: unknown scope');
+    expect(err).not.toContain("unknown job");
   });
 });

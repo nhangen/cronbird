@@ -5,8 +5,8 @@
  * projection of {@link computeStatus}. No scheduling, no writes.
  */
 import { readFileSync } from "node:fs";
-import { computeStatus, createMatcher, explainJob, queryRunHistory, STALE_EXIT_CODE, type JobStatus, type RunRecord, type StatusReport } from "../core/index";
-import { parseConfig } from "./config";
+import { computeStatus, createMatcher, explainJob, queryRunHistory, STALE_EXIT_CODE, type ExplainReport, type Heartbeat, type Job, type JobStatus, type RunRecord, type StatusReport } from "../core/index";
+import { parseConfig, type CronbirdConfig } from "./config";
 import { readHeartbeatFile } from "./heartbeat-file";
 import { readRunHistoryFile } from "./history-file";
 import { fileEnabledProvider, fileJobProvider, fileTopologyProvider } from "./providers";
@@ -127,40 +127,44 @@ export function runStatusCommand(sub: StatusSubcommand, args: string[], deps: St
       deps.err(`error: explain requires a job name — usage: cronbird explain <config.json> <job-name>\n`);
       return 2;
     }
-    let report: import("../core/index").ExplainReport;
+    let cfg: CronbirdConfig;
+    let inputs: LoadedInputs;
     try {
-      const cfg = parseConfig(readFileSync(configPath, "utf8"), deps.env);
-      const registryResult = fileJobProvider(cfg.registryPath)();
-      const enabledResult = fileEnabledProvider(cfg.enabledPath)();
-      const topologyResult = fileTopologyProvider(cfg.topologyPath)();
-      const heartbeatResult = readHeartbeatFile(cfg.heartbeatPath);
-
-      for (const { warnings } of [registryResult, enabledResult, topologyResult, heartbeatResult]) {
-        for (const w of warnings) deps.err(`warning: ${w}\n`);
-      }
-      let history: RunRecord[] | undefined;
-      if (cfg.historyPath) {
-        try {
-          history = readRunHistoryFile(cfg.historyPath);
-        } catch (e) {
-          deps.err(`warning: could not read run history ${cfg.historyPath}: ${e instanceof Error ? e.message : String(e)}\n`);
-        }
-      }
-
+      cfg = parseConfig(readFileSync(configPath, "utf8"), deps.env);
+      inputs = loadInputs(cfg, deps);
+    } catch (e) {
+      deps.err(`config error: ${e instanceof Error ? e.message : String(e)}\n`);
+      return 1;
+    }
+    if (!inputs.registryOk) {
+      deps.err(`error: registry could not be loaded from ${cfg.registryPath}\n`);
+      return 1;
+    }
+    if (!inputs.jobs.some((j) => j.name === jobName)) {
+      const skip = inputs.registryWarnings.find((w) => w.startsWith(`skipped ${jobName}: `));
+      deps.err(
+        skip
+          ? `error: job ${JSON.stringify(jobName)} is in the registry but was skipped: ${skip.slice(`skipped ${jobName}: `.length)}\n`
+          : `error: unknown job: ${JSON.stringify(jobName)} (not in registry)\n`,
+      );
+      return 1;
+    }
+    let report: ExplainReport;
+    try {
       report = explainJob({
-        jobs: registryResult.jobs,
+        jobs: inputs.jobs,
         name: jobName,
         host: cfg.hostname,
-        enabled: enabledResult.value,
-        owners: topologyResult.value?.owners ?? {},
-        heartbeat: heartbeatResult.value,
+        enabled: inputs.enabled,
+        owners: inputs.owners,
+        heartbeat: inputs.heartbeat,
         matcher: createMatcher(),
         now: deps.now(),
         options: { count: parsed.count ?? 5 },
-        history,
+        history: inputs.history,
       });
     } catch (e) {
-      deps.err(`${e instanceof Error ? e.message : String(e)}\n`);
+      deps.err(`error: ${e instanceof Error ? e.message : String(e)}\n`);
       return 1;
     }
     renderExplain(report, parsed, deps);
@@ -170,34 +174,19 @@ export function runStatusCommand(sub: StatusSubcommand, args: string[], deps: St
   let report: StatusReport;
   try {
     const cfg = parseConfig(readFileSync(configPath, "utf8"), deps.env);
-    const registryResult = fileJobProvider(cfg.registryPath)();
-    const enabledResult = fileEnabledProvider(cfg.enabledPath)();
-    const topologyResult = fileTopologyProvider(cfg.topologyPath)();
-    const heartbeatResult = readHeartbeatFile(cfg.heartbeatPath);
-
-    for (const { warnings } of [registryResult, enabledResult, topologyResult, heartbeatResult]) {
-      for (const w of warnings) deps.err(`warning: ${w}\n`);
-    }
-    let history: RunRecord[] | undefined;
-    if (cfg.historyPath) {
-      try {
-        history = readRunHistoryFile(cfg.historyPath);
-      } catch (e) {
-        deps.err(`warning: could not read run history ${cfg.historyPath}: ${e instanceof Error ? e.message : String(e)}\n`);
-      }
-    }
+    const inputs = loadInputs(cfg, deps);
     report = computeStatus({
-      jobs: registryResult.jobs,
+      jobs: inputs.jobs,
       host: cfg.hostname,
-      enabled: enabledResult.value,
-      owners: topologyResult.value?.owners ?? {},
-      heartbeat: heartbeatResult.value,
+      enabled: inputs.enabled,
+      owners: inputs.owners,
+      heartbeat: inputs.heartbeat,
       matcher: createMatcher(),
       now: deps.now(),
       // Above the wake cap so a just-woken daemon isn't flagged stale — for both
       // per-job staleness and the daemon's own heartbeat.
       options: { staleGraceMs: 2 * cfg.maxSleepMs, daemonHeartbeatStaleMs: 2 * cfg.maxSleepMs },
-      history,
+      history: inputs.history,
     });
   } catch (e) {
     deps.err(`config error: ${e instanceof Error ? e.message : String(e)}\n`);
@@ -216,6 +205,44 @@ export function runStatusCommand(sub: StatusSubcommand, args: string[], deps: St
     return STALE_EXIT_CODE;
   }
   return 0;
+}
+
+interface LoadedInputs {
+  jobs: Job[];
+  registryOk: boolean;
+  registryWarnings: string[];
+  enabled: Set<string>;
+  owners: Record<string, string>;
+  heartbeat: Heartbeat | null;
+  history: RunRecord[] | undefined;
+}
+
+function loadInputs(cfg: CronbirdConfig, deps: StatusCliDeps): LoadedInputs {
+  const registryResult = fileJobProvider(cfg.registryPath)();
+  const enabledResult = fileEnabledProvider(cfg.enabledPath)();
+  const topologyResult = fileTopologyProvider(cfg.topologyPath)();
+  const heartbeatResult = readHeartbeatFile(cfg.heartbeatPath);
+
+  for (const { warnings } of [registryResult, enabledResult, topologyResult, heartbeatResult]) {
+    for (const w of warnings) deps.err(`warning: ${w}\n`);
+  }
+  let history: RunRecord[] | undefined;
+  if (cfg.historyPath) {
+    try {
+      history = readRunHistoryFile(cfg.historyPath);
+    } catch (e) {
+      deps.err(`warning: could not read run history ${cfg.historyPath}: ${e instanceof Error ? e.message : String(e)}\n`);
+    }
+  }
+  return {
+    jobs: registryResult.jobs,
+    registryOk: registryResult.ok,
+    registryWarnings: registryResult.warnings,
+    enabled: enabledResult.value,
+    owners: topologyResult.value?.owners ?? {},
+    heartbeat: heartbeatResult.value,
+    history,
+  };
 }
 
 function parseFlags(sub: StatusSubcommand, args: string[], deps: StatusCliDeps): ParsedArgs | number {
@@ -424,7 +451,7 @@ function renderHistory(records: RunRecord[], parsed: ParsedArgs, deps: StatusCli
   deps.out(table(rows));
 }
 
-function renderExplain(report: import("../core/index").ExplainReport, parsed: ParsedArgs, deps: StatusCliDeps): void {
+function renderExplain(report: ExplainReport, parsed: ParsedArgs, deps: StatusCliDeps): void {
   if (parsed.json) {
     deps.out(JSON.stringify(report, null, 2) + "\n");
     return;
