@@ -39,11 +39,33 @@ export interface MatcherOptions {
 export declare function assertValidTimezone(timezone: string): void;
 export declare function createMatcher(opts?: MatcherOptions): CronMatcher;
 /**
+ * Resolves a {@link CronMatcher} for a job. Each resolver instance owns a
+ * private per-timezone cache, so different callers (tests, simulate runs,
+ * daemons) never share state.
+ */
+export interface JobMatcherResolver {
+    /**
+     * Return the matcher for the given job. Jobs without a timezone return the
+     * resolver's default matcher; jobs with a timezone get a per-timezone cached
+     * matcher (created once per timezone string per resolver).
+     */
+    resolve(job: Job): CronMatcher;
+}
+/**
+ * Create a matcher resolver with its own isolated per-timezone cache.
+ *
+ * Jobs without a `timezone` return `defaultMatcher` (or a fresh UTC matcher
+ * when none is supplied). Jobs with a `timezone` get a dedicated matcher,
+ * cached inside this resolver only — no module-level state is shared.
+ */
+export declare function createJobMatcherResolver(defaultMatcher?: CronMatcher): JobMatcherResolver;
+/**
  * Return the correct {@link CronMatcher} for a job, honouring its
  * `timezone` field. Jobs without a `timezone` fall through to
  * `defaultMatcher` (typically a host-local `createMatcher()`).
  *
- * Matchers are cached per timezone string so repeated calls for jobs that
- * share a zone do not re-validate or re-allocate.
+ * @deprecated Use {@link createJobMatcherResolver} to get a per-caller
+ * resolver with isolated state, or inject a `JobMatcherResolver` directly
+ * into daemon/simulate entry points.
  */
 export declare function matcherForJob(job: Job, defaultMatcher: CronMatcher): CronMatcher;

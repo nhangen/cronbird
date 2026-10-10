@@ -1,4 +1,4 @@
-import { type CronMatcher } from "./cron";
+import { type CronMatcher, type JobMatcherResolver } from "./cron";
 import type { Heartbeat, Job } from "./types";
 export interface SimulateOptions<T = unknown> {
     from: Date;
@@ -7,6 +7,8 @@ export interface SimulateOptions<T = unknown> {
     jobs: Job<T>[];
     enabled: Set<string>;
     owners: Record<string, string>;
+    matcherResolver?: JobMatcherResolver;
+    /** Default matcher for jobs without a timezone. Shortcut for passing a resolver via `matcherResolver`. */
     matcher?: CronMatcher;
     initialHeartbeat?: Heartbeat | null;
     initialLastFired?: Record<string, number>;

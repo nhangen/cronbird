@@ -1,4 +1,4 @@
-import { type CronMatcher } from "./cron";
+import { type CronMatcher, type JobMatcherResolver } from "./cron";
 import { RunQueue } from "./run-queue";
 import type { CompletionRecord, DispatchRecord, Heartbeat, Job, RunRecord, Topology } from "./types";
 export interface DaemonDeps<T = unknown> {
@@ -35,8 +35,10 @@ export interface DaemonDeps<T = unknown> {
     writeHeartbeat(hb: Heartbeat): void;
     log(msg: string): void;
     host: string;
-    /** Default (host-local) matcher; per-job timezone is handled via {@link matcherForJob}. */
-    matcher: CronMatcher;
+    /** Optional resolver for creating matchers; if not provided, creates a fresh per-caller resolver. */
+    matcherResolver?: JobMatcherResolver;
+    /** Default matcher for jobs without a timezone (used when matcherResolver is not provided). */
+    matcher?: CronMatcher;
     maxSleepMs: number;
     /**
      * Catch-up look-back resolver: given a job and the current `now`,
@@ -124,4 +126,4 @@ export declare function runForever<T>(deps: DaemonDeps<T>): Promise<void>;
  * Behaviour matches the former inlined loop body: dispatch stays fire-and-forget
  * and happens strictly AFTER the heartbeat write (at-most-once over double-fire).
  */
-export declare function runOneTick<T>(deps: DaemonDeps<T>, state: TickState<T>): number;
+export declare function runOneTick<T>(deps: DaemonDeps<T>, state: TickState<T>, hostResolver: JobMatcherResolver): number;
