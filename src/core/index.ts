@@ -1,6 +1,6 @@
 export type { Job, Topology, Heartbeat, DispatchRecord, QueueEntry, CompletionRecord, RunRecord, RunOutcome, RunningSlotInfo } from "./types";
-export { createMatcher, assertValidTimezone, matcherForJob } from "./cron";
-export type { CronMatcher, MatcherOptions } from "./cron";
+export { createMatcher, createJobMatcherResolver, assertValidTimezone, matcherForJob } from "./cron";
+export type { CronMatcher, JobMatcherResolver, MatcherOptions } from "./cron";
 export { InvalidTimezoneError } from "./cron";
 export { selectRunnable, dueAt, nextWake } from "./select";
 export { catchUpFires, lookbackForSchedule } from "./catchup";

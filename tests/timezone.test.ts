@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { createMatcher, matcherForJob, assertValidTimezone, InvalidTimezoneError, simulateSchedule, computeStatus, dueAt, nextWake, type Job } from "../src/core/index";
+import { createMatcher, createJobMatcherResolver, matcherForJob, assertValidTimezone, InvalidTimezoneError, simulateSchedule, computeStatus, dueAt, nextWake, type Job } from "../src/core/index";
 
 const d = (iso: string) => new Date(iso);
 const defaultMatcher = createMatcher({ timezone: "UTC" });
@@ -29,17 +29,44 @@ describe("matcherForJob", () => {
     expect(nf!.toISOString()).toBe("2026-06-01T13:00:00.000Z");
   });
 
-  test("creates fresh matchers per call for timezone-aware jobs (no shared cache)", () => {
-    const job1 = pb({ name: "a", timezone: "Europe/Berlin" });
-    const job2 = pb({ name: "b", timezone: "Europe/Berlin" });
-    const m1 = matcherForJob(job1, defaultMatcher);
-    const m2 = matcherForJob(job2, defaultMatcher);
-    expect(m1).not.toBe(defaultMatcher);
-    expect(m2).not.toBe(defaultMatcher);
-    // Both should produce correct Berlin-timezone results
-    const nf1 = m1.nextFire("0 9 * * *", d("2026-06-01T00:00:00Z"));
-    const nf2 = m2.nextFire("0 9 * * *", d("2026-06-01T00:00:00Z"));
-    expect(nf1!.toISOString()).toBe(nf2!.toISOString());
+  test("does not share a module-level cache: each call returns a new matcher", () => {
+    const m1 = matcherForJob(pb({ name: "a", timezone: "Europe/Berlin" }), defaultMatcher);
+    const m2 = matcherForJob(pb({ name: "b", timezone: "Europe/Berlin" }), defaultMatcher);
+    expect(m1).not.toBe(m2);
+  });
+});
+
+describe("createJobMatcherResolver", () => {
+  test("returns the supplied default matcher for jobs without a timezone", () => {
+    const r = createJobMatcherResolver(defaultMatcher);
+    expect(r.resolve(pb({ name: "plain" }))).toBe(defaultMatcher);
+  });
+
+  test("reuses one matcher per timezone within a resolver", () => {
+    const r = createJobMatcherResolver(defaultMatcher);
+    const a = r.resolve(pb({ name: "a", timezone: "Europe/Berlin" }));
+    const b = r.resolve(pb({ name: "b", timezone: "Europe/Berlin" }));
+    expect(a).toBe(b);
+    expect(a).not.toBe(defaultMatcher);
+  });
+
+  test("separate resolvers never share matchers for the same timezone", () => {
+    const job = pb({ name: "a", timezone: "Europe/Berlin" });
+    expect(createJobMatcherResolver(defaultMatcher).resolve(job)).not.toBe(createJobMatcherResolver(defaultMatcher).resolve(job));
+  });
+
+  test("timezoned matchers evaluate in the job's zone", () => {
+    const r = createJobMatcherResolver(defaultMatcher);
+    // America/New_York is UTC-4 in June (EDT). 9:00 local = 13:00 UTC.
+    const nf = r.resolve(pb({ name: "ny", timezone: "America/New_York" })).nextFire("0 9 * * *", d("2026-06-01T00:00:00Z"));
+    expect(nf!.toISOString()).toBe("2026-06-01T13:00:00.000Z");
+  });
+
+  test("throws InvalidTimezoneError for an unknown zone and does not cache the failure", () => {
+    const r = createJobMatcherResolver(defaultMatcher);
+    const bad = pb({ name: "bad", timezone: "Not/AZone" });
+    expect(() => r.resolve(bad)).toThrow(InvalidTimezoneError);
+    expect(() => r.resolve(bad)).toThrow(InvalidTimezoneError);
   });
 });
 
