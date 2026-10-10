@@ -964,7 +964,7 @@ describe("staleness eviction — Task E", () => {
 });
 
 describe("queued slot for a job that left the runnable set", () => {
-  test("a stale slot for a deactivated job is dropped, not dispatched", async () => {
+  test("a stale slot for a deactivated job is evicted, not dispatched", async () => {
     const now = d("2026-07-07T19:00:00Z");
     const staleTs = d("2026-07-07T09:00:00Z").getTime();
     const hb = h0Heartbeat({ queue: [{ name: "gone", priority: 1, slotTs: staleTs }] });
@@ -976,22 +976,42 @@ describe("queued slot for a job that left the runnable set", () => {
     });
     await runForever(h.deps);
     expect(h.dispatched).toEqual([]);
-    expect(h.logs.some((l) => l.includes("dropped queued slot gone"))).toBe(true);
+    expect(h.logs.some((l) => l.includes("evicted stale slot gone"))).toBe(true);
     expect((h.heartbeats.at(-1)!.queue ?? []).some((e) => e.name === "gone")).toBe(false);
   });
 
-  test("a fresh slot for a deactivated job is dropped too", async () => {
+  test("a slot for a job removed from the registry is dropped", async () => {
     const now = d("2026-07-07T09:00:30Z");
-    const hb = h0Heartbeat({ queue: [{ name: "gone", priority: 1, slotTs: d("2026-07-07T09:00:00Z").getTime() }] });
+    const hb = h0Heartbeat({ queue: [{ name: "removed", priority: 1, slotTs: d("2026-07-07T09:00:00Z").getTime() }] });
     const h = harness({
       nows: [now],
-      playbooks: [pb({ name: "gone", cronSchedule: "0 10 * * *", isActive: false })],
+      playbooks: [pb({ name: "other", cronSchedule: "0 10 * * *" })],
       startHeartbeat: hb,
-      lookback: 60 * 60_000,
       readCompletions: () => ({ running: {}, done: {} }),
     });
     await runForever(h.deps);
     expect(h.dispatched).toEqual([]);
+    expect(h.logs.some((l) => l.includes("dropped queued slot removed"))).toBe(true);
+  });
+
+  test("a torn enabled read does not drop fresh queued slots", async () => {
+    const slotTs = d("2026-07-07T09:00:00Z").getTime();
+    const hb = h0Heartbeat({
+      queue: [
+        { name: "a", priority: 1, slotTs },
+        { name: "b", priority: 1, slotTs },
+      ],
+    });
+    const h = harness({
+      nows: [d("2026-07-07T09:00:30Z"), d("2026-07-07T09:01:00Z"), d("2026-07-07T09:01:30Z")],
+      playbooks: [pb({ name: "a", cronSchedule: "0 10 * * *" }), pb({ name: "b", cronSchedule: "0 10 * * *" })],
+      startHeartbeat: hb,
+      enabledByTick: [null, new Set(["a", "b"]), new Set(["a", "b"])],
+      lookback: 60 * 60_000,
+    });
+    await runForever(h.deps);
+    expect(h.logs.some((l) => l.includes("dropped queued slot"))).toBe(false);
+    expect(h.dispatched).toContain("b");
   });
 });
 

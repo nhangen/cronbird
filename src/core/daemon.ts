@@ -421,11 +421,13 @@ export function runOneTick<T>(deps: DaemonDeps<T>, state: TickState<T>): number 
     // they default to `now` and are never stale. Eviction removes and continues,
     // so it never wedges the chain — the next eligible entry is picked.
     const slotTs = state.slotTsByName[candidate.name] ?? now.getTime();
-    const job = jobByName.get(candidate.name);
+    // Fall back to the full registry: a job can be transiently non-runnable
+    // (torn enabled/topology read) and must still be judged by its own lookback.
+    const job = jobByName.get(candidate.name) ?? jobs.find((x) => x.name === candidate.name);
     if (!job) {
       state.queue.remove(candidate.name);
       delete state.slotTsByName[candidate.name];
-      deps.log(`dropped queued slot ${candidate.name}: job no longer runnable on this host`);
+      deps.log(`dropped queued slot ${candidate.name}: job no longer in the registry`);
       continue;
     }
     if (now.getTime() - slotTs > deps.resolveLookback(job, now)) {
