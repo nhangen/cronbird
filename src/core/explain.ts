@@ -13,8 +13,9 @@
  * validity? — plus the next N fires and the last recorded fire.
  */
 import type { CronMatcher } from "./cron";
+import { mergeRunRecords } from "./history";
 import { selectRunnable } from "./select";
-import type { Heartbeat, Job } from "./types";
+import type { Heartbeat, Job, RunRecord } from "./types";
 
 /** A single gate the job must pass to be runnable on this host, with the
  *  gate's outcome and a human-readable reason. */
@@ -45,7 +46,8 @@ export interface ExplainReport {
   /** True when the `cronSchedule` cannot be parsed. Distinct from "not
    *  runnable": a runnable job with an invalid schedule never fires. */
   scheduleValid: boolean;
-  /** Epoch ms of the newest recorded fire (heartbeat `last_fired`), or null. */
+  /** Epoch ms of the newest recorded fire: heartbeat `last_fired`, else the
+   *  newest run-history slot (same fallback as {@link JobStatus.lastFired}), or null. */
   lastFired: number | null;
   /** Up to `N` upcoming fire instants (epoch ms) strictly after `now`, or an
    *  empty list when not runnable / schedule invalid / never fires again. */
@@ -85,8 +87,9 @@ export function explainJob<T>(args: {
   matcher: CronMatcher;
   now: Date;
   options?: ExplainOptions;
+  history?: RunRecord[];
 }): ExplainReport {
-  const { jobs, name, host, enabled, owners, heartbeat, matcher, now, options } = args;
+  const { jobs, name, host, enabled, owners, heartbeat, matcher, now, options, history } = args;
   const job = jobs.find((j) => j.name === name);
   if (!job) {
     throw new Error(`unknown job: ${JSON.stringify(name)} (not in registry)`);
@@ -174,7 +177,12 @@ export function explainJob<T>(args: {
   }
 
   const lastFiredRaw = heartbeat?.last_fired?.[job.name];
-  const lastFired = typeof lastFiredRaw === "number" ? lastFiredRaw : null;
+  let lastFired = typeof lastFiredRaw === "number" ? lastFiredRaw : null;
+  if (lastFired === null && history) {
+    for (const r of mergeRunRecords(history.filter((h) => h.job === job.name))) {
+      if (lastFired === null || r.scheduledFor > lastFired) lastFired = r.scheduledFor;
+    }
+  }
 
   return {
     name: job.name,

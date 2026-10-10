@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { explainJob, createMatcher, type Heartbeat, type Job } from "../src/core/index";
+import { explainJob, createMatcher, type Heartbeat, type Job, type RunRecord } from "../src/core/index";
 
 const matcher = createMatcher();
 // Fixed reference instant: 2026-07-01T12:00:00Z (noon UTC, top of hour).
@@ -120,6 +120,27 @@ describe("explainJob — runnable each-job", () => {
       { enabled: new Set(["alpha"]), heartbeat: hb({ alpha: NOW_MS - 3600_000 }) },
     );
     expect(r.lastFired).toBe(NOW_MS - 3600_000);
+  });
+
+  test("last_fired falls back to the newest run-history slot when the heartbeat has none", () => {
+    const rec = (scheduledFor: number): RunRecord => ({
+      job: "alpha", scheduledFor, startedAt: scheduledFor, finishedAt: scheduledFor + 1000,
+      exitCode: 0, outcome: "success", durationMs: 1000,
+    });
+    const r = explainJob({
+      jobs: [job({ name: "alpha" })], name: "alpha", host: "ml-1", enabled: new Set(["alpha"]), owners: {},
+      heartbeat: null, matcher, now: NOW, history: [rec(NOW_MS - 7_200_000), rec(NOW_MS - 3_600_000)],
+    });
+    expect(r.lastFired).toBe(NOW_MS - 3_600_000);
+  });
+
+  test("heartbeat last_fired wins over run history", () => {
+    const r = explainJob({
+      jobs: [job({ name: "alpha" })], name: "alpha", host: "ml-1", enabled: new Set(["alpha"]), owners: {},
+      heartbeat: hb({ alpha: NOW_MS - 60_000 }), matcher, now: NOW,
+      history: [{ job: "alpha", scheduledFor: NOW_MS - 3_600_000, startedAt: NOW_MS - 3_600_000, finishedAt: null, exitCode: null, outcome: "running", durationMs: null }],
+    });
+    expect(r.lastFired).toBe(NOW_MS - 60_000);
   });
 
   test("last_fired is null when heartbeat is null", () => {

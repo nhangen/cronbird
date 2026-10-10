@@ -159,7 +159,7 @@ function runWith(
     historyAsDir?: boolean; // history path exists but is a directory, so it cannot be read as a file
     maxSleepMs?: number;
   },
-  sub: "status" | "list" | "next-runs" | "history",
+  sub: "status" | "list" | "next-runs" | "history" | "explain",
   args: string[] = [],
 ) {
   const d = mkdtempSync(join(tmpdir(), "cronbird-status-w-"));
@@ -745,3 +745,21 @@ describe("explain", () => {
   });
 });
 
+describe("explain — inputs beyond the shared fixture", () => {
+  test("lastFired falls back to run history when the heartbeat has no entry, matching status", () => {
+    const history = JSON.stringify({
+      job: "alpha",
+      scheduledFor: NOW_MS - 7_200_000,
+      startedAt: NOW_MS - 7_200_000,
+      finishedAt: NOW_MS - 7_190_000,
+      exitCode: 0,
+      outcome: "success",
+      durationMs: 10_000,
+    }) + "\n";
+    const opts = { registry: { jobs: [everyMinute("alpha")] }, enabled: ["alpha"], history };
+    const explained = JSON.parse(runWith(opts, "explain", ["alpha", "--json"]).out);
+    const status = JSON.parse(runWith(opts, "status", ["--json"]).out);
+    expect(explained.lastFired).toBe(NOW_MS - 7_200_000);
+    expect(explained.lastFired).toBe(status.jobs[0].lastFired);
+  });
+});

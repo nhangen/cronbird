@@ -138,6 +138,14 @@ export function runStatusCommand(sub: StatusSubcommand, args: string[], deps: St
       for (const { warnings } of [registryResult, enabledResult, topologyResult, heartbeatResult]) {
         for (const w of warnings) deps.err(`warning: ${w}\n`);
       }
+      let history: RunRecord[] | undefined;
+      if (cfg.historyPath) {
+        try {
+          history = readRunHistoryFile(cfg.historyPath);
+        } catch (e) {
+          deps.err(`warning: could not read run history ${cfg.historyPath}: ${e instanceof Error ? e.message : String(e)}\n`);
+        }
+      }
 
       report = explainJob({
         jobs: registryResult.jobs,
@@ -149,6 +157,7 @@ export function runStatusCommand(sub: StatusSubcommand, args: string[], deps: St
         matcher: createMatcher(),
         now: deps.now(),
         options: { count: parsed.count ?? 5 },
+        history,
       });
     } catch (e) {
       deps.err(`${e instanceof Error ? e.message : String(e)}\n`);
