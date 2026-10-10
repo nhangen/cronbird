@@ -19,6 +19,12 @@ import { RunQueue } from "./run-queue";
 import { dueAt, nextWake, selectRunnable } from "./select";
 import type { CompletionRecord, DispatchRecord, Heartbeat, Job, RunRecord, Topology } from "./types";
 
+/** Outcome record emitted by the dispatch wrapper for each job. */
+export interface DispatchOutcome {
+  ts: number;           // Unix timestamp when the run started
+  exit_code: number;    // Exit code of the last completion (0 = success)
+}
+
 const MINUTE_MS = 60_000;
 /** How many recent dispatches to retain in the heartbeat for observability. */
 const MAX_RECENT_DISPATCH = 20;
@@ -80,6 +86,12 @@ export interface DaemonDeps<T = unknown> {
    * "run everything".
    */
   readCompletions(): { running: Record<string, number>; done: Record<string, CompletionRecord> };
+  /**
+   * Load job outcomes from the outcome directory (per-job JSON files written
+   * by the dispatch wrapper). Returns a map of jobName → DispatchOutcome or
+   * empty object if no outcomes exist or the directory is unreadable.
+   */
+  loadOutcomes(): Record<string, DispatchOutcome>;
   /**
    * Product-supplied per-job cooldown in seconds. A job whose last completion
    * (from `readCompletions().done`) is more recent than its cooldown is NOT
@@ -268,8 +280,21 @@ export function runOneTick<T>(deps: DaemonDeps<T>, state: TickState<T>): number 
   const nextLastFired: Record<string, number> = {};
   for (const p of runnable) nextLastFired[p.name] = state.lastFired[p.name] ?? now.getTime();
   // Read run state once per tick: drives completion processing, the cooldown
-  // gate (below), and the drain.
+  // gate (below), and the drain. The overlap gate checks outcomes to skip
+  // queueing jobs still running from earlier dispatches — prevents stacking
+  // multiple runs for a single execution slot.
+  const outcomes = deps.loadOutcomes();
   const completions = deps.readCompletions();
+
+  // Overlap gate: jobs with an in-flight or recently-completed outcome are
+  // skipped at this tick. We use outcome timestamps to detect running state
+  // — a record whose ts is within maxDispatchWindowMs of now indicates a job
+  // that was dispatched but hasn't reported completion yet (or just completed),
+  // so we don't requeue it into the same slot.
+  const overlapThreshold = deps.maxDispatchWindowMs ?? 30_000; // 30s default
+  const isInFlightOrRecent = (job: Job<unknown>, outcome: DispatchOutcome): boolean => {
+    return outcome.ts !== undefined && now.getTime() - outcome.ts < overlapThreshold;
+  };
 
   // Process fresh completions (done.ts newer than what we've accounted for):
   // a success resets the retry counter and stamps last_success; a failure
@@ -324,6 +349,16 @@ export function runOneTick<T>(deps: DaemonDeps<T>, state: TickState<T>): number 
     const done = completions.done[job.name];
     return done !== undefined && now.getTime() - done.ts < deps.cooldownSeconds(job) * 1000;
   };
+  // Overlap gate: jobs with an in-flight or recently-completed outcome from disk
+  // are skipped. This prevents stacking multiple runs for a single execution slot
+  // when the dispatch wrapper hasn't yet reported completion back to the scheduler.
+  const overlapGuardCheck = (job: Job<T>): boolean => {
+    const outcome = outcomes[job.name];
+    if (!outcome) return false; // no outcome record → allow dispatch (first run ever, or stale record)
+    // Use maxDispatchWindowMs threshold to detect "still running" vs. "completed but not yet recorded"
+    // - If the job was dispatched recently (< overlapThreshold), skip it (it's in-flight)
+    return now.getTime() - outcome.ts < deps.maxDispatchWindowMs ?? overlapThreshold;
+  };
   // ENQUEUE (not dispatch) due + catch-up slots by priority; stamp last_fired at
   // enqueue so the queued entry is the single slot owner. Draining happens after
   // the heartbeat write below.
@@ -332,6 +367,10 @@ export function runOneTick<T>(deps: DaemonDeps<T>, state: TickState<T>): number 
     const job = jobByName.get(p.name)!;
     if (withinCooldown(job)) {
       deps.log(`cooldown skip ${p.name}`);
+      continue;
+    }
+    if (overlapGuardCheck(job)) {
+      deps.log(`overlap guard skip ${p.name} (dispatch record not yet complete)`);
       continue;
     }
     if (state.queue.enqueue(p.name, deps.priority(job))) {
@@ -348,6 +387,10 @@ export function runOneTick<T>(deps: DaemonDeps<T>, state: TickState<T>): number 
   for (const f of catches) {
     if (withinCooldown(f.job)) {
       deps.log(`cooldown skip ${f.job.name}`);
+      continue;
+    }
+    if (overlapGuardCheck(f.job)) {
+      deps.log(`overlap guard skip ${f.job.name} (dispatch record not yet complete)`);
       continue;
     }
     if (state.queue.enqueue(f.job.name, deps.priority(f.job))) {

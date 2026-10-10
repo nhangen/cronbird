@@ -10,7 +10,18 @@ import { runStatusCommand, STATUS_SUBCOMMANDS, type StatusSubcommand } from "./s
 import { runSimulateCommand } from "./simulate";
 import { acquireFlock } from "./flock";
 import { HELP_TOKENS, usageText } from "./usage";
+import { loadOutcomes as _loadOutcomes } from "./outcome-provider";
 import { createSurfacer } from "./warn-dedup";
+
+type DispatchOutcome = { ts: number; exit_code: number };
+
+function mergeOutcomes(disk: Record<string, DispatchOutcome>, memory: Record<string, DispatchOutcome>): Record<string, DispatchOutcome> {
+  const merged = { ...memory };
+  for (const name of Object.keys(disk)) {
+    merged[name] = disk[name];
+  }
+  return merged;
+}
 
 function nowStamp(): string { return new Date().toISOString(); }
 
@@ -97,7 +108,29 @@ async function main(): Promise<void> {
     loadEnabled: () => surface("enabled", fileEnabledProvider(cfg.enabledPath)()),
     loadTopology: () => surface("topology", fileTopologyProvider(cfg.topologyPath)()),
     dispatch: (name) => dispatcher.dispatch(name),
-    readHeartbeat: () => surface("heartbeat", readHeartbeatFile(cfg.heartbeatPath)),
+    readHeartbeat: (cfg) => {
+      const hb = readHeartbeatFile(cfg.heartbeatPath);
+      if (!hb.ok && !running) throw new Error(hb.err);
+      // Merge disk outcomes into heartbeat outcome, so the guard has persistence across ticks.
+      return {
+        ok: true,
+        ts: hb.ts,
+        host: hb.host,
+        runnable_count: hb.runnable_count ?? 0,
+        next_wake_ts: hb.next_wake_ts ?? 0,
+        last_dispatch: hb.last_dispatch ?? [],
+        dispatched_minute: { ...(hb.dispatched_minute || {}) },
+        last_fired: { ...(hb.last_fired || {}) },
+        outcome: cfg.outcomeDir ? mergeOutcomes(hb.outcome ?? {}, _loadOutcomes()) : (hb.outcome ?? {}),
+        queue: hb.queue ?? [],
+        running: hb.running ?? {},
+        running_slots: hb.running_slots ?? {},
+        last_completed: hb.last_completed ?? {},
+        attempts: hb.attempts ?? {},
+        last_run: hb.last_run ?? {},
+        last_success: hb.last_success ?? {},
+      };
+    },
     writeHeartbeat: (hb) => writeHeartbeatWithSync(hb, {
       writeLocal: (h) => writeHeartbeatFile(cfg.heartbeatPath, h),
       writeSynced: syncedHbPath ? () => writeSyncedHeartbeat(syncedHbPath, cfg.hostname) : () => {},
@@ -120,6 +153,8 @@ async function main(): Promise<void> {
     // that wrapper lands, the fail-safe empty read means "nothing running", so the
     // queue drains every tick — identical to the prior fire-and-forget dispatch.
     readCompletions: () => ({ running: {}, done: {} }),
+    loadOutcomes: _loadOutcomes,
+    maxDispatchWindowMs: cfg.maxDispatchWindowMs ?? overlapThreshold,
     // Cooldown gate. 0 = no cooldown until the product resolver (reads each job's
     // cooldown_seconds metadata) is wired alongside the dispatch wrapper — keeps
     // current behavior (no cooldown enforced in the engine yet).

@@ -76,6 +76,8 @@ export interface Heartbeat {
   dispatched_minute: Record<string, number>;
   /** jobName → epoch-ms of the newest slot fired (drives catch-up). */
   last_fired: Record<string, number>;
+  /** jobName → last completion for overlap guard. Defaults to {} when absent. */
+  outcome?: Record<string, DispatchOutcome> | {};
   /** Persisted priority queue so a restart resumes the backlog. */
   queue: QueueEntry[];
   /** jobName → startedTs of an in-flight run (restored from running/ dir). */
@@ -90,4 +92,9 @@ export interface Heartbeat {
   last_run: Record<string, number>;
   /** jobName → epoch-ms of its last exit-0 completion. */
   last_success: Record<string, number>;
+}
+
+export interface DispatchOutcome {
+  ts: number;
+  exit_code: number;
 }

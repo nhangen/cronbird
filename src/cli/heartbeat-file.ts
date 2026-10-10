@@ -11,19 +11,20 @@ import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "
 import { dirname } from "node:path";
 import type { CompletionRecord, DispatchRecord, Heartbeat, QueueEntry, RunningSlotInfo } from "../core/index";
 
-export function readHeartbeatFile(path: string): { value: Heartbeat | null; warnings: string[] } {
-  if (!existsSync(path)) return { value: null, warnings: [] };
-  const warn = (): { value: Heartbeat | null; warnings: string[] } => ({
+export function readHeartbeatFile(path: string): { value: Heartbeat | null; warnings: string[]; outcome: Record<string, DispatchOutcome> } {
+  if (!existsSync(path)) return { value: null, warnings: [], outcome: {} };
+  const warn = (): { value: Heartbeat | null; warnings: string[]; outcome: Record<string, DispatchOutcome> } => ({
     value: null,
     warnings: [`heartbeat file present but unparseable: ${path}`],
+    outcome: {},
   });
   let text: string;
   try {
     text = readFileSync(path, "utf8");
   } catch (e) {
     const code = (e as NodeJS.ErrnoException).code ?? "unknown";
-    if (code === "ENOENT") return { value: null, warnings: [] };
-    return { value: null, warnings: [`heartbeat file present but unreadable: ${path} (${code})`] };
+    if (code === "ENOENT") return { value: null, warnings: [], outcome: {} };
+    return { value: null, warnings: [`heartbeat file present but unreadable: ${path} (${code})`], outcome: {} };
   }
   let raw: unknown;
   try {
@@ -62,6 +63,8 @@ export function readHeartbeatFile(path: string): { value: Heartbeat | null; warn
       attempts: numericMap(r.attempts),
       last_run: numericMap(r.last_run),
       last_success: numericMap(r.last_success),
+      // Outcome records keyed by playbook name. Missing or malformed entries default to empty object.
+      outcome: outcomeRecords(r.outcome),
     },
     warnings: [],
   };
@@ -102,6 +105,28 @@ function completionMap(raw: unknown): Record<string, CompletionRecord> {
       ) {
         const { ts, exitCode, durationMs } = v as CompletionRecord;
         out[name] = { ts, exitCode, durationMs };
+      }
+    }
+  }
+  return out;
+}
+
+// Parse outcome records keyed by playbook name. Absent (pre-outcome-capture heartbeats) or
+// malformed entries read as empty so the overlap guard starts with a clean state —
+// never crashes at boot, never fabricates outcomes.
+function outcomeRecords(raw: unknown): Record<string, DispatchOutcome> {
+  const out: Record<string, DispatchOutcome> = {};
+  if (typeof raw === "object" && raw !== null) {
+    for (const [name, v] of Object.entries(raw as Record<string, unknown>)) {
+      if (
+        typeof v === "object" &&
+        v !== null &&
+        typeof (v as DispatchOutcome).ts === "number" &&
+        typeof (v as DispatchOutcome).exitCode === "number"
+      ) {
+        const ts = (v as DispatchOutcome).ts;
+        const exitCode = (v as DispatchOutcome).exitCode;
+        out[name] = { ts, exitCode };
       }
     }
   }

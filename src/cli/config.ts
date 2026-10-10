@@ -13,11 +13,13 @@ export interface CronbirdConfig {
   historyPath: string | null;
   maxHistoryRecords: number | null;
   historyRetentionMs: number | null;
+  outcomeDir: string | null;
   dispatchCommand: string[];
   dispatchArgsTemplate: string[];
   maxSleepMs: number;
   catchupLookbackFloorMs: number;
   catchupLookbackCapMs: number;
+  maxDispatchWindowMs: number | null; // Optional override for overlap guard threshold (default: 30s)
 }
 
 function expandTilde(p: string, home: string | undefined): string {
@@ -100,7 +102,8 @@ export function parseConfig(raw: string, env: Record<string, string | undefined>
       const lp = optString(o, "lockPath");
       return lp ? expandTilde(lp, home) : null;
     })(),
-    historyPath: (() => { const hp = optString(o, "historyPath"); return hp ? expandTilde(hp, home) : null; })(),
+    const historyPath: (() => { const hp = optString(o, "historyPath"); return hp ? expandTilde(hp, home) : null; })() ?? null;
+  const outcomeDir: (() => { const od = optString(o, "outcomeDir"); return od ? expandTilde(od, home) : null; })() ?? null;
     maxHistoryRecords: optPosInt(o, "maxHistoryRecords"),
     historyRetentionMs: optPosInt(o, "historyRetentionMs"),
     dispatchCommand: reqStringArray(o, "dispatchCommand"),
