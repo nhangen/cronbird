@@ -109,6 +109,8 @@ export function createMatcher(opts: MatcherOptions = {}): CronMatcher {
   return new CronerMatcher(opts);
 }
 
+const matcherCache = new Map<string, CronMatcher>();
+
 /**
  * Return the correct {@link CronMatcher} for a job, honouring its
  * `timezone` field. Jobs without a `timezone` fall through to
@@ -117,8 +119,6 @@ export function createMatcher(opts: MatcherOptions = {}): CronMatcher {
  * Matchers are cached per timezone string so repeated calls for jobs that
  * share a zone do not re-validate or re-allocate.
  */
-const matcherCache = new Map<string, CronMatcher>();
-
 export function matcherForJob(job: Job, defaultMatcher: CronMatcher): CronMatcher {
   if (!job.timezone) return defaultMatcher;
   const cached = matcherCache.get(job.timezone);
