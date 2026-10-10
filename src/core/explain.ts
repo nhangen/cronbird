@@ -6,11 +6,6 @@
  * same config, registry, enablement, topology, and heartbeat the daemon uses,
  * then asks this module to explain a single job's gating. No I/O and no
  * scheduling — same discipline as {@link ./select} and {@link ./status}.
- *
- * This is the `explain <job>` projection for issue #16: it dissolves the
- * "why didn't my job run" debugging session into one command by spelling out
- * every gate — active? scope? enabled-membership? owner match? schedule
- * validity? — plus the next N fires and the last recorded fire.
  */
 import { CronExpressionError, type CronMatcher } from "./cron";
 import { mergeRunRecords } from "./history";
@@ -46,8 +41,8 @@ export interface ExplainReport {
   /** The ordered gates applied, and how each one went. The first failing gate
    *  (if any) is the reason the job is not runnable. */
   gates: ExplainGate[];
-  /** True when the `cronSchedule` cannot be parsed. Distinct from "not
-   *  runnable": a runnable job with an invalid schedule never fires. */
+  /** True when the `cronSchedule` parses. Distinct from "runnable": a
+   *  runnable job with an invalid schedule never fires. */
   scheduleValid: boolean;
   /** Why the schedule is invalid ("cronSchedule is blank" or the parser's
    *  message), or null when it parses. */
@@ -76,8 +71,8 @@ export interface ExplainSourceNotes {
 /**
  * Explain why `name` is or isn't runnable on `host`, and when it next fires.
  *
- * `name` must name a job in `jobs` — the caller (CLI) does the lookup and
- * erroring. The gates mirror {@link ./select.selectRunnable} exactly:
+ * Throws when `name` is not in `jobs`. The gates mirror
+ * {@link ./select.selectRunnable} exactly:
  *
  *   1. active            — `isActive === true` (invariant gate for all jobs)
  *   2. schedule          — `cronSchedule` is not blank
@@ -85,11 +80,10 @@ export interface ExplainSourceNotes {
  *   4. enabled-membership — `scope === "each"`: job is in this host's enabled set
  *   5. owner-match        — `scope === "single"`: `owners[name] === host`
  *
- * A job is runnable iff it passes gates 1, 2, and 4/5 (as applicable). Gates
- * are reported in order; a failing gate is a hard stop for the *runnable*
- * conclusion but subsequent gates are still evaluated and reported so the
- * operator sees the full picture (e.g. an inactive each-job that's also not
- * in the enabled set shows both failures).
+ * A job is runnable iff it passes gates 1, 2, and whichever of 4/5 applies
+ * to its scope; the other is reported with `applicable: false`. Every gate
+ * is evaluated even after one fails, so an inactive each-job that is also
+ * missing from the enabled set shows both failures.
  */
 export function explainJob<T>(args: {
   jobs: Job<T>[];
@@ -113,7 +107,6 @@ export function explainJob<T>(args: {
   }
   const nowMs = now.getTime();
 
-  // Gate 1: active (invariant for all jobs).
   const activeGate: ExplainGate = job.isActive
     ? { gate: "active", passed: true, applicable: true, reason: "job is active" }
     : { gate: "active", passed: false, applicable: true, reason: "job is inactive (isActive === false) — the daemon never fires it" };
@@ -122,7 +115,6 @@ export function explainJob<T>(args: {
     ? { gate: "schedule", passed: false, applicable: true, reason: "cronSchedule is blank — the daemon skips jobs with no schedule" }
     : { gate: "schedule", passed: true, applicable: true, reason: `schedule is ${JSON.stringify(job.cronSchedule)}` };
 
-  // Gate 2: scope (informational — the job's declared intent).
   const scopeGate: ExplainGate = {
     gate: "scope",
     passed: true,
@@ -130,8 +122,6 @@ export function explainJob<T>(args: {
     reason: `scope is "${job.scope}"` + (job.scope === "single" ? " (runs only on its owner)" : " (runs on every host that enables it)"),
   };
 
-  // Gates 3/4: the scope-specific gate. Both are evaluated for reporting, but
-  // only the scope-applicable one is authoritative for the runnable conclusion.
   const enabledGate: ExplainGate =
     enabled.has(job.name)
       ? { gate: "enabled-membership", passed: true, applicable: true, reason: `job is in this host's enabled set (${JSON.stringify(host)})` }
@@ -148,11 +138,6 @@ export function explainJob<T>(args: {
 
   const runnable = selectRunnable([job], host, enabled, owners).length === 1;
 
-  // Report the gates in the order they apply for this job's scope. The
-  // scope-applicable gate is authoritative; the scope-inapplicable one is
-  // included with `passed: true` and a "not applicable" reason so the operator
-  // sees the full state (e.g. an each-job that also happens to have an owner
-  // entry) without it reading as a failure.
   const gates: ExplainGate[] = [activeGate, scheduleGate, scopeGate];
   const naEnabled: ExplainGate = { gate: "enabled-membership", passed: true, applicable: false, reason: "not applicable — scope is \"single\" (gated by owner-match)" };
   const naOwner: ExplainGate = { gate: "owner-match", passed: true, applicable: false, reason: "not applicable — scope is \"each\" (gated by enabled-membership)" };
@@ -162,8 +147,6 @@ export function explainJob<T>(args: {
     gates.push(ownerGate, naEnabled);
   }
 
-  // Schedule validity (distinct from runnable — a runnable job with a broken
-  // schedule never fires; this is the "invalid-schedule" health in ./status).
   let scheduleError: string | null = null;
   if (job.cronSchedule.trim() === "") {
     scheduleError = "cronSchedule is blank";
@@ -177,8 +160,6 @@ export function explainJob<T>(args: {
   }
   const scheduleValid = scheduleError === null;
 
-  // Next N fires, strictly after `now`. Only computed when runnable AND the
-  // schedule parses — otherwise the daemon can't fire it on this host anyway.
   const count = Math.max(0, options?.count ?? 5);
   const nextFires: number[] = [];
   if (runnable && scheduleValid) {

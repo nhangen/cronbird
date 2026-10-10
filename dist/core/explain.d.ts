@@ -6,11 +6,6 @@
  * same config, registry, enablement, topology, and heartbeat the daemon uses,
  * then asks this module to explain a single job's gating. No I/O and no
  * scheduling — same discipline as {@link ./select} and {@link ./status}.
- *
- * This is the `explain <job>` projection for issue #16: it dissolves the
- * "why didn't my job run" debugging session into one command by spelling out
- * every gate — active? scope? enabled-membership? owner match? schedule
- * validity? — plus the next N fires and the last recorded fire.
  */
 import { type CronMatcher } from "./cron";
 import type { Heartbeat, Job, RunRecord } from "./types";
@@ -42,8 +37,8 @@ export interface ExplainReport {
     /** The ordered gates applied, and how each one went. The first failing gate
      *  (if any) is the reason the job is not runnable. */
     gates: ExplainGate[];
-    /** True when the `cronSchedule` cannot be parsed. Distinct from "not
-     *  runnable": a runnable job with an invalid schedule never fires. */
+    /** True when the `cronSchedule` parses. Distinct from "runnable": a
+     *  runnable job with an invalid schedule never fires. */
     scheduleValid: boolean;
     /** Why the schedule is invalid ("cronSchedule is blank" or the parser's
      *  message), or null when it parses. */
@@ -69,8 +64,8 @@ export interface ExplainSourceNotes {
 /**
  * Explain why `name` is or isn't runnable on `host`, and when it next fires.
  *
- * `name` must name a job in `jobs` — the caller (CLI) does the lookup and
- * erroring. The gates mirror {@link ./select.selectRunnable} exactly:
+ * Throws when `name` is not in `jobs`. The gates mirror
+ * {@link ./select.selectRunnable} exactly:
  *
  *   1. active            — `isActive === true` (invariant gate for all jobs)
  *   2. schedule          — `cronSchedule` is not blank
@@ -78,11 +73,10 @@ export interface ExplainSourceNotes {
  *   4. enabled-membership — `scope === "each"`: job is in this host's enabled set
  *   5. owner-match        — `scope === "single"`: `owners[name] === host`
  *
- * A job is runnable iff it passes gates 1, 2, and 4/5 (as applicable). Gates
- * are reported in order; a failing gate is a hard stop for the *runnable*
- * conclusion but subsequent gates are still evaluated and reported so the
- * operator sees the full picture (e.g. an inactive each-job that's also not
- * in the enabled set shows both failures).
+ * A job is runnable iff it passes gates 1, 2, and whichever of 4/5 applies
+ * to its scope; the other is reported with `applicable: false`. Every gate
+ * is evaluated even after one fails, so an inactive each-job that is also
+ * missing from the enabled set shows both failures.
  */
 export declare function explainJob<T>(args: {
     jobs: Job<T>[];

@@ -77,7 +77,7 @@ export function runStatusCommand(sub: StatusSubcommand, args: string[], deps: St
 
   if (sub === "explain") {
     // Accommodate both `cronbird explain <config.json> <job-name>` and
-    // `cronbird explain <job-name> <config.json>` (issue #16), as well as
+    // `cronbird explain <job-name> <config.json>`, as well as
     // `CRONBIRD_CONFIG=... cronbird explain <job-name>`.
     if (parsed.configPath && parsed.jobName) {
       if (parsed.jobName.endsWith(".json") && !parsed.configPath.endsWith(".json")) {
@@ -472,9 +472,6 @@ function renderExplain(report: ExplainReport, configPath: string, parsed: Parsed
     deps.out(JSON.stringify({ ...report, configPath }, null, 2) + "\n");
     return;
   }
-  // Human-readable rendering: the headline verdict, the gate table, and the
-  // fire times. The gate table is the core of #16 — it makes the opaque
-  // "why didn't my job run" question one command.
   const verdict = !report.runnable ? "NOT RUNNABLE" : report.scheduleValid ? "RUNNABLE" : "RUNNABLE (schedule invalid — never fires)";
   deps.out(`job=${report.name}  host=${report.host}  ${verdict}\n\n`);
   deps.out(`config:         ${configPath}\n`);

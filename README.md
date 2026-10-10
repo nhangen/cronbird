@@ -182,7 +182,7 @@ The projection is built by `computeStatus` in `cronbird/core` (pure, clock-injec
 
 ### Explain a job
 
-`cronbird explain <config.json> <job-name>` dissolves the "why didn't my job run" debugging burden into one command. It evaluates each gating criterion in order and prints a human-readable gate table, the last recorded fire, and upcoming fires:
+`cronbird explain <config.json> <job-name>` answers "why didn't my job run" in one command. It evaluates each gate in order and prints the config it read, a gate table, the last recorded fire, and upcoming fires. The arguments can come in either order, or you can set `CRONBIRD_CONFIG` and pass only the job name:
 
 ```bash
 cronbird explain ./cronbird.config.json morning-scan
@@ -191,10 +191,17 @@ cronbird explain ./cronbird.config.json morning-scan --json
 ```
 
 Gates evaluated:
-1. `active` — `isActive === true` (invariant gate for all jobs).
-2. `scope` — informational declared scope (`"each"` or `"single"`).
-3. `enabled-membership` — for `scope: "each"`, verifies the job appears in this host's enabled set (`enabledPath`).
-4. `owner-match` — for `scope: "single"`, verifies the job's owner in `topology.owners` matches this host's `hostname`.
+1. `active` — `isActive === true`.
+2. `schedule` — `cronSchedule` is not blank.
+3. `scope` — informational declared scope (`"each"` or `"single"`).
+4. `enabled-membership` — for `scope: "each"`, the job appears in this host's enabled set (`enabledPath`).
+5. `owner-match` — for `scope: "single"`, the job's owner in `topology.owners` matches this host's `hostname`.
+
+Only one of gates 4 and 5 applies to a job; the other shows `n/a` (`applicable: false` in `--json`). A job is runnable exactly when every applicable gate passes.
+
+Options:
+- `--json` — emit the `ExplainReport` plus `configPath` as JSON.
+- `--count <n>` — how many upcoming fires to list, from 0 to 1000 (default 5).
 
 Example:
 
@@ -202,6 +209,7 @@ Example:
 $ cronbird explain ./cronbird.config.json morning-scan
 job=morning-scan  host=ml-1  RUNNABLE
 
+config:         ./cronbird.config.json
 schedule:       0 6 * * *
 scope:          each
 active:         yes
@@ -209,9 +217,10 @@ schedule valid: yes
 
 GATE                PASSED  REASON
 active              yes     job is active
+schedule            yes     schedule is "0 6 * * *"
 scope               yes     scope is "each" (runs on every host that enables it)
 enabled-membership  yes     job is in this host's enabled set ("ml-1")
-owner-match         yes     not applicable — scope is "each" (gated by enabled-membership)
+owner-match         n/a     not applicable — scope is "each" (gated by enabled-membership)
 
 last fired: 2h ago
 #  NEXT FIRE                 IN
@@ -219,7 +228,9 @@ last fired: 2h ago
 2  2026-10-11T06:00:00.000Z  in 1d 8h
 ```
 
-If a job is not runnable, the gate table shows which gate failed and why (e.g. `owner is "host-b" (not this host "ml-1")` or `job is NOT in this host's enabled set ("ml-1")`). If the schedule cannot be parsed, `schedule valid` reports `no` and next fires are omitted.
+If a job is not runnable, the gate table shows which gate failed and why (e.g. `owner is "host-b" (not this host "ml-1")` or `job is NOT in this host's enabled set ("ml-1")`). When the enabled or topology file is missing or its path is not configured, the reason says so (for example, `— enabled file not found: <path>`). If the schedule cannot be parsed, the headline reads `RUNNABLE (schedule invalid — never fires)`, `schedule error` gives the parser's message, and next fires are omitted.
+
+`explain` exits 1 for an unreadable config (`config error:`), a registry that could not be loaded, a job the registry parser skipped (with the reason), or an unknown job, and 2 for a usage error.
 
 ### Run history
 
