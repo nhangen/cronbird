@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 import { readFileSync } from "node:fs";
-import { createMatcher, matcherForJob, lookbackForSchedule, runForever, FATAL_EXIT_CODE, type DaemonDeps, type Job } from "../core/index";
+import { createMatcher, matcherForJob, lookbackForSchedule, runForever, FATAL_EXIT_CODE, type DaemonDeps } from "../core/index";
 import { parseConfig } from "./config";
 import { fileJobProvider, fileEnabledProvider, fileTopologyProvider } from "./providers";
 import { ShellDispatcher } from "./shell-dispatcher";
