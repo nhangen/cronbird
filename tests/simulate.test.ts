@@ -138,17 +138,17 @@ describe("simulateSchedule — core fast-forward engine", () => {
       to: d("2026-06-01T09:00:00Z"),
       host: "ml-1",
       jobs: [
-        pb({ name: "lowPrio", metadata: { p: 10 } }),
-        pb({ name: "highPrio", metadata: { p: 1 } }),
-        pb({ name: "alsoHighPrio", metadata: { p: 1 } }),
+        pb({ name: "aLowPrio", metadata: { p: 10 } }),
+        pb({ name: "zHighPrio", metadata: { p: 1 } }),
+        pb({ name: "mHighPrio", metadata: { p: 1 } }),
       ],
-      enabled: new Set(["lowPrio", "highPrio", "alsoHighPrio"]),
+      enabled: new Set(["aLowPrio", "zHighPrio", "mHighPrio"]),
       owners: {},
       matcher: m,
       priority: (j) => (j.metadata as { p: number }).p,
     });
 
-    expect(report.dispatches.map((x) => x.job)).toEqual(["alsoHighPrio", "highPrio", "lowPrio"]);
+    expect(report.dispatches.map((x) => x.job)).toEqual(["mHighPrio", "zHighPrio", "aLowPrio"]);
   });
 
   test("dependency validation: invalid cycle jobs are excluded with warnings", () => {
