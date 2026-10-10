@@ -126,6 +126,14 @@ export function runSimulateCommand(args: string[], deps: SimulateCliDeps): numbe
     for (const w of warnings) deps.err(`warning: ${w}\n`);
   }
 
+  // The daemon keeps running on these by falling back to last-good or an empty
+  // set; a dry run has nothing to fall back to, so an empty schedule would be fiction.
+  // Sidecar providers only warn when a file is present but unreadable/unparseable.
+  if (!registryResult.ok || enabledResult.warnings.length > 0 || topologyResult.warnings.length > 0) {
+    deps.err("config error: required input could not be loaded; simulation not run\n");
+    return 1;
+  }
+
   const report = simulateSchedule({
     from: new Date(fromMs),
     to: new Date(toMs),

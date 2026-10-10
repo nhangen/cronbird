@@ -15,6 +15,29 @@ const topologyPath = join(dir, "topology.json");
 const configPath = join(dir, "config.json");
 
 const quickstartConfigPath = join(dir, "quickstart-config.json");
+const missingRegistryConfigPath = join(dir, "missing-registry-config.json");
+const corruptEnabledPath = join(dir, "corrupt-enabled.json");
+const corruptEnabledConfigPath = join(dir, "corrupt-enabled-config.json");
+
+function writeConfig(path: string, over: Record<string, unknown>): void {
+  writeFileSync(
+    path,
+    JSON.stringify({
+      hostname: "ml-1",
+      registryPath,
+      enabledPath,
+      topologyPath,
+      heartbeatPath: join(dir, "hb.json"),
+      syncedHeartbeatDir: null,
+      dispatchCommand: ["./run.sh"],
+      dispatchArgsTemplate: ["{job}"],
+      maxSleepMs: 60_000,
+      catchupLookbackFloorMs: 3_600_000,
+      catchupLookbackCapMs: 21_600_000,
+      ...over,
+    }),
+  );
+}
 
 const NOW = new Date("2026-07-01T12:00:00.000Z");
 
@@ -58,6 +81,10 @@ beforeAll(() => {
       catchupLookbackCapMs: 21_600_000,
     }),
   );
+
+  writeConfig(missingRegistryConfigPath, { registryPath: join(dir, "no-such-registry.json") });
+  writeFileSync(corruptEnabledPath, "nope");
+  writeConfig(corruptEnabledConfigPath, { enabledPath: corruptEnabledPath });
 
   // Quickstart config reproducing #10 (enabledPath: null, topologyPath: null)
   writeFileSync(
@@ -152,6 +179,24 @@ describe("simulate CLI — arguments and validation", () => {
       "2026-07-01T15:00:00Z",
     ]);
     expect(code).toBe(1);
+    expect(err).toContain("config error:");
+  });
+});
+
+describe("simulate CLI — load failures", () => {
+  test("missing registry exits 1 instead of reporting an empty window", () => {
+    const { code, out, err } = run([missingRegistryConfigPath, "--from", "now", "--to", "+2h"]);
+    expect(code).toBe(1);
+    expect(out).toBe("");
+    expect(err).toContain("registry file not found");
+    expect(err).toContain("config error:");
+  });
+
+  test("present-but-unparseable enabled file exits 1", () => {
+    const { code, out, err } = run([corruptEnabledConfigPath, "--from", "now", "--to", "+2h"]);
+    expect(code).toBe(1);
+    expect(out).toBe("");
+    expect(err).toContain("warning: enabled file present but unparseable");
     expect(err).toContain("config error:");
   });
 });
