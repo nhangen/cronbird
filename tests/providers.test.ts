@@ -16,6 +16,22 @@ describe("providers", () => {
     expect(r.warnings.length).toBe(1);
   });
 
+  test("parseJobsJson carries a valid timezone and skips rows with an invalid one", () => {
+    const row = (name: string, extra: Record<string, unknown>) => ({ name, cronSchedule: "0 9 * * *", isActive: true, ...extra });
+    const r = parseJobsJson(JSON.stringify({ jobs: [
+      row("ny", { timezone: "America/New_York" }),
+      row("local", {}),
+      row("mars", { timezone: "Mars/Olympus_Mons" }),
+      row("empty", { timezone: "" }),
+      row("num", { timezone: 123 }),
+    ]}));
+    expect(r.jobs.map((j) => [j.name, j.timezone])).toEqual([["ny", "America/New_York"], ["local", undefined]]);
+    expect(r.warnings.length).toBe(3);
+    expect(r.warnings.find((w) => w.startsWith("skipped mars:"))).toContain("Mars/Olympus_Mons");
+    expect(r.warnings).toContain("skipped empty: timezone must be a non-empty IANA string");
+    expect(r.warnings).toContain("skipped num: timezone must be a non-empty IANA string");
+  });
+
   test("parseEnabledJson returns empty set on malformed input (fail-safe) with warning", () => {
     const bad = parseEnabledJson("not json");
     expect(bad.value.size).toBe(0);
