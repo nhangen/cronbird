@@ -237,12 +237,16 @@ describe("DST transitions stay monotonic (no gap stall, no fall-back replay)", (
     // 2026-04-05 02:00 +11 → 01:30 +10:30; 01:30 local fires at +11 = 14:30Z (not 15:00Z).
     const lordHowe = createMatcher({ timezone: "Australia/Lord_Howe" });
     expect(lordHowe.nextFire("30 1 * * *", d("2026-04-04T12:00:00Z"))).toEqual(d("2026-04-04T14:30:00Z"));
+    expect(lordHowe.matchesAt("30 1 * * *", d("2026-04-04T14:30:00Z"))).toBe(true);
+    expect(lordHowe.matchesAt("30 1 * * *", d("2026-04-04T15:00:00Z"))).toBe(false);
   });
 
   test("fall-back with a 2-hour overlap (Antarctica/Troll) fires at the first occurrence", () => {
     // 2026-10-25 03:00 +02 → 01:00 +00; 01:30 local fires at +02 = 23:30Z the day before (not 01:30Z).
     const troll = createMatcher({ timezone: "Antarctica/Troll" });
     expect(troll.nextFire("30 1 * * *", d("2026-10-24T12:00:00Z"))).toEqual(d("2026-10-24T23:30:00Z"));
+    expect(troll.matchesAt("30 1 * * *", d("2026-10-24T23:30:00Z"))).toBe(true);
+    expect(troll.matchesAt("30 1 * * *", d("2026-10-25T01:30:00Z"))).toBe(false);
   });
 
   test("fall-back: matchesAt returns true for first occurrence and false for second across zones", () => {
