@@ -46,6 +46,9 @@ export interface MatcherOptions {
 const MINUTE_MS = 60_000;
 // Longest current DST overlap is two hours (Antarctica/Troll); the cap leaves slack.
 const MAX_OVERLAP_PROBES = 3 * 60;
+// Fall-back overlap lengths in current tzdata (Troll 2h, most zones 1h, Lord_Howe 30m).
+// Historical 3-hour overlaps (Antarctica/Casey 2018–2023) are not matched.
+const FALL_BACK_OVERLAPS_MS = [120 * MINUTE_MS, 60 * MINUTE_MS, 30 * MINUTE_MS];
 
 class CronerMatcher implements CronMatcher {
   private readonly formatter: Intl.DateTimeFormat;
@@ -84,7 +87,7 @@ class CronerMatcher implements CronMatcher {
   private resolveFirstOccurrence(date: Date): Date {
     const targetLocal = this.formatter.format(date);
     let earliest = date;
-    for (const shiftMs of [120 * MINUTE_MS, 60 * MINUTE_MS, 30 * MINUTE_MS]) {
+    for (const shiftMs of FALL_BACK_OVERLAPS_MS) {
       const candidate = new Date(date.getTime() - shiftMs);
       if (this.formatter.format(candidate) === targetLocal) {
         if (candidate.getTime() < earliest.getTime()) {
