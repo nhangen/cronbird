@@ -207,4 +207,59 @@ describe("DST transitions stay monotonic (no gap stall, no fall-back replay)", (
     expect(ny.nextFire("* * * * *", d("2026-11-01T06:10:00Z"))).toEqual(d("2026-11-01T07:00:00Z"));
     expect(ny.nextFire("30 1 * * *", d("2026-11-01T06:00:00Z"))).toEqual(d("2026-11-02T06:30:00Z"));
   });
+
+  const london = createMatcher({ timezone: "Europe/London" });
+
+  test("fall-back (east of UTC): a 01:30 schedule fires once, at the first (BST) occurrence", () => {
+    // 2026-10-25 01:30 happens twice; fires at 01:30 BST = 00:30Z (not 01:30Z GMT).
+    expect(london.nextFire("30 1 * * *", d("2026-10-24T12:00:00Z"))).toEqual(d("2026-10-25T00:30:00Z"));
+  });
+
+  test("fall-back (east of UTC): every-minute schedule steps through first occurrence and skips second", () => {
+    // Stepping from 2026-10-24T23:59Z visits 00:00Z (01:00 BST), not 01:00Z (GMT).
+    expect(london.nextFire("* * * * *", d("2026-10-24T23:59:00Z"))).toEqual(d("2026-10-25T00:00:00Z"));
+    // At the end of the first occurrence, it skips the second occurrence (01:00Z-01:59Z) and lands on 02:00Z.
+    expect(london.nextFire("* * * * *", d("2026-10-25T00:59:00Z"))).toEqual(d("2026-10-25T02:00:00Z"));
+  });
+
+  test("fall-back (east of UTC): nextFire from inside the repeated hour is still strictly after `from`", () => {
+    for (let ms = d("2026-10-25T01:00:00Z").getTime(); ms < d("2026-10-25T02:00:00Z").getTime(); ms += 60_000) {
+      const from = new Date(ms);
+      const next = london.nextFire("* * * * *", from);
+      expect(next).not.toBeNull();
+      expect(next!.getTime()).toBeGreaterThan(ms);
+    }
+    expect(london.nextFire("* * * * *", d("2026-10-25T01:10:00Z"))).toEqual(d("2026-10-25T02:00:00Z"));
+    expect(london.nextFire("30 1 * * *", d("2026-10-25T01:00:00Z"))).toEqual(d("2026-10-26T01:30:00Z"));
+  });
+
+  test("fall-back with a 30-minute overlap (Australia/Lord_Howe) fires at the first occurrence", () => {
+    // 2026-04-05 02:00 +11 → 01:30 +10:30; 01:30 local fires at +11 = 14:30Z (not 15:00Z).
+    const lordHowe = createMatcher({ timezone: "Australia/Lord_Howe" });
+    expect(lordHowe.nextFire("30 1 * * *", d("2026-04-04T12:00:00Z"))).toEqual(d("2026-04-04T14:30:00Z"));
+    expect(lordHowe.matchesAt("30 1 * * *", d("2026-04-04T14:30:00Z"))).toBe(true);
+    expect(lordHowe.matchesAt("30 1 * * *", d("2026-04-04T15:00:00Z"))).toBe(false);
+  });
+
+  test("fall-back with a 2-hour overlap (Antarctica/Troll) fires at the first occurrence", () => {
+    // 2026-10-25 03:00 +02 → 01:00 +00; 01:30 local fires at +02 = 23:30Z the day before (not 01:30Z).
+    const troll = createMatcher({ timezone: "Antarctica/Troll" });
+    expect(troll.nextFire("30 1 * * *", d("2026-10-24T12:00:00Z"))).toEqual(d("2026-10-24T23:30:00Z"));
+    expect(troll.matchesAt("30 1 * * *", d("2026-10-24T23:30:00Z"))).toBe(true);
+    expect(troll.matchesAt("30 1 * * *", d("2026-10-25T01:30:00Z"))).toBe(false);
+  });
+
+  test("fall-back: matchesAt returns true for first occurrence and false for second across zones", () => {
+    // West of UTC (America/New_York)
+    expect(ny.matchesAt("30 1 * * *", d("2026-11-01T05:30:00Z"))).toBe(true);  // first (EDT)
+    expect(ny.matchesAt("30 1 * * *", d("2026-11-01T06:30:00Z"))).toBe(false); // second (EST)
+    expect(ny.matchesAt("* * * * *", d("2026-11-01T05:30:00Z"))).toBe(true);
+    expect(ny.matchesAt("* * * * *", d("2026-11-01T06:30:00Z"))).toBe(false);
+
+    // East of UTC (Europe/London)
+    expect(london.matchesAt("30 1 * * *", d("2026-10-25T00:30:00Z"))).toBe(true);  // first (BST)
+    expect(london.matchesAt("30 1 * * *", d("2026-10-25T01:30:00Z"))).toBe(false); // second (GMT)
+    expect(london.matchesAt("* * * * *", d("2026-10-25T00:30:00Z"))).toBe(true);
+    expect(london.matchesAt("* * * * *", d("2026-10-25T01:30:00Z"))).toBe(false);
+  });
 });

@@ -46,9 +46,25 @@ export interface MatcherOptions {
 const MINUTE_MS = 60_000;
 // Longest current DST overlap is two hours (Antarctica/Troll); the cap leaves slack.
 const MAX_OVERLAP_PROBES = 3 * 60;
+// Fall-back overlap lengths in current tzdata (Troll 2h, most zones 1h, Lord_Howe 30m).
+// Historical 3-hour overlaps (Antarctica/Casey 2018–2023) are not matched.
+const FALL_BACK_OVERLAPS_MS = [120 * MINUTE_MS, 60 * MINUTE_MS, 30 * MINUTE_MS];
 
 class CronerMatcher implements CronMatcher {
-  constructor(private readonly opts: MatcherOptions = {}) {}
+  private readonly formatter: Intl.DateTimeFormat;
+
+  constructor(private readonly opts: MatcherOptions = {}) {
+    this.formatter = new Intl.DateTimeFormat("en-US", {
+      timeZone: this.opts.timezone,
+      year: "numeric",
+      month: "numeric",
+      day: "numeric",
+      hour: "numeric",
+      minute: "numeric",
+      second: "numeric",
+      hour12: false,
+    });
+  }
 
   private build(expr: string): Cron {
     // Enforce the 5-field contract before croner sees it: croner
@@ -68,23 +84,39 @@ class CronerMatcher implements CronMatcher {
     }
   }
 
+  private resolveFirstOccurrence(date: Date): Date {
+    const targetLocal = this.formatter.format(date);
+    let earliest = date;
+    for (const shiftMs of FALL_BACK_OVERLAPS_MS) {
+      const candidate = new Date(date.getTime() - shiftMs);
+      if (this.formatter.format(candidate) === targetLocal) {
+        if (candidate.getTime() < earliest.getTime()) {
+          earliest = candidate;
+        }
+      }
+    }
+    return earliest;
+  }
+
   nextFire(expr: string, from: Date): Date | null {
     const cron = this.build(expr);
-    // Inside a DST fall-back hour croner 9.1 can return an instant before `from`.
+    // Inside a DST fall-back hour croner 9.1 can return an instant before `from`,
+    // or pick the second occurrence in zones east of UTC.
     // Step past the overlap until it returns a real successor.
+    // Policy: a repeated wall-clock time fires only at its first occurrence, so
+    // wildcard schedules go quiet for the length of the overlap.
     for (let probe = from.getTime(), i = 0; i < MAX_OVERLAP_PROBES; probe += MINUTE_MS, i++) {
-      const next = cron.nextRun(new Date(probe));
-      if (next === null || next.getTime() > from.getTime()) return next;
+      const raw = cron.nextRun(new Date(probe));
+      if (raw === null) return null;
+      const first = this.resolveFirstOccurrence(raw);
+      if (first.getTime() > from.getTime()) return first;
     }
     throw new Error(`cron ${JSON.stringify(expr)}: no fire after ${from.toISOString()} within ${MAX_OVERLAP_PROBES} minutes of probing`);
   }
 
   matchesAt(expr: string, when: Date): boolean {
-    const cron = this.build(expr);
     const minute = Math.floor(when.getTime() / MINUTE_MS) * MINUTE_MS;
-    // nextRun is strictly-after, so probe from 1ms before the minute boundary:
-    // a fire at `minute` is then returned exactly.
-    const next = cron.nextRun(new Date(minute - 1));
+    const next = this.nextFire(expr, new Date(minute - 1));
     return next !== null && next.getTime() === minute;
   }
 }
