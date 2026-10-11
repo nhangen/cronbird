@@ -105,9 +105,6 @@ class CronerMatcher implements CronMatcher {
       if (raw === null) return null;
       const first = this.resolveFirstOccurrence(raw);
       if (first.getTime() > from.getTime()) return first;
-      if (first.getTime() === raw.getTime() && raw.getTime() > from.getTime()) {
-        return raw;
-      }
     }
     throw new Error(`cron ${JSON.stringify(expr)}: no fire after ${from.toISOString()} within ${MAX_OVERLAP_PROBES} minutes of probing`);
   }
