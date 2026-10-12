@@ -104,7 +104,7 @@ class CronerMatcher implements CronMatcher {
     // or pick the second occurrence in zones east of UTC.
     // Step past the overlap until it returns a real successor.
     // Policy: a repeated wall-clock time fires only at its first occurrence, so
-    // wildcard schedules go quiet for the length of the overlap.
+    // nextFire skips the overlap; matchesAt still accepts sub-hourly minutes in it.
     for (let probe = from.getTime(), i = 0; i < MAX_OVERLAP_PROBES; probe += MINUTE_MS, i++) {
       const raw = cron.nextRun(new Date(probe));
       if (raw === null) return null;
@@ -117,7 +117,30 @@ class CronerMatcher implements CronMatcher {
   matchesAt(expr: string, when: Date): boolean {
     const minute = Math.floor(when.getTime() / MINUTE_MS) * MINUTE_MS;
     const next = this.nextFire(expr, new Date(minute - 1));
-    return next !== null && next.getTime() === minute;
+    if (next !== null && next.getTime() === minute) return true;
+    // croner maps every probe inside the second occurrence of a fall-back
+    // overlap to the first, so only sub-hourly schedules are re-checked there.
+    if (this.isSubHourly(expr)) {
+      const firstOcc = this.resolveFirstOccurrence(when);
+      if (firstOcc.getTime() !== when.getTime()) {
+        const firstMinute = Math.floor(firstOcc.getTime() / MINUTE_MS) * MINUTE_MS;
+        const probe = this.nextFire(expr, new Date(firstMinute - 1));
+        return probe !== null && probe.getTime() === firstMinute;
+      }
+    }
+    return false;
+  }
+
+  /**
+   * Sub-hourly: a literal `*` hour field and a minute field that is not a
+   * single fixed value. Only these keep firing through the second occurrence of
+   * a fall-back overlap; every other schedule fires once, at the first.
+   */
+  private isSubHourly(expr: string): boolean {
+    const [minuteField, hourField] = expr.trim().split(/\s+/);
+    if (hourField !== "*") return false;
+    if (/^\d+$/.test(minuteField ?? "")) return false;
+    return true;
   }
 }
 

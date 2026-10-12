@@ -252,14 +252,54 @@ describe("DST transitions stay monotonic (no gap stall, no fall-back replay)", (
   test("fall-back: matchesAt returns true for first occurrence and false for second across zones", () => {
     // West of UTC (America/New_York)
     expect(ny.matchesAt("30 1 * * *", d("2026-11-01T05:30:00Z"))).toBe(true);  // first (EDT)
-    expect(ny.matchesAt("30 1 * * *", d("2026-11-01T06:30:00Z"))).toBe(false); // second (EST)
-    expect(ny.matchesAt("* * * * *", d("2026-11-01T05:30:00Z"))).toBe(true);
-    expect(ny.matchesAt("* * * * *", d("2026-11-01T06:30:00Z"))).toBe(false);
+    expect(ny.matchesAt("30 1 * * *", d("2026-11-01T06:30:00Z"))).toBe(false); // second (EST) — fire-once
 
     // East of UTC (Europe/London)
     expect(london.matchesAt("30 1 * * *", d("2026-10-25T00:30:00Z"))).toBe(true);  // first (BST)
-    expect(london.matchesAt("30 1 * * *", d("2026-10-25T01:30:00Z"))).toBe(false); // second (GMT)
-    expect(london.matchesAt("* * * * *", d("2026-10-25T00:30:00Z"))).toBe(true);
-    expect(london.matchesAt("* * * * *", d("2026-10-25T01:30:00Z"))).toBe(false);
+    expect(london.matchesAt("30 1 * * *", d("2026-10-25T01:30:00Z"))).toBe(false); // second (GMT) — fire-once
+  });
+
+  test("fall-back: sub-hourly schedules fire in both occurrences", () => {
+    // West of UTC (America/New_York): 06:00Z-06:59Z is the second (EST) 01:00-01:59.
+    expect(ny.matchesAt("* * * * *", d("2026-11-01T05:30:00Z"))).toBe(true);  // first occurrence
+    expect(ny.matchesAt("* * * * *", d("2026-11-01T06:30:00Z"))).toBe(true);  // second occurrence — real-time
+
+    // Step schedule: */10 fires at :00 :10 :20 :30 :40 :50 in both occurrences.
+    expect(ny.matchesAt("*/10 * * * *", d("2026-11-01T06:00:00Z"))).toBe(true);  // 01:00 EST
+    expect(ny.matchesAt("*/10 * * * *", d("2026-11-01T06:30:00Z"))).toBe(true);  // 01:30 EST
+    expect(ny.matchesAt("*/10 * * * *", d("2026-11-01T06:35:00Z"))).toBe(false); // 01:35 EST — not a */10 slot
+
+    // East of UTC (Europe/London): 01:00Z-01:59Z is the second (GMT) 01:00-01:59.
+    expect(london.matchesAt("* * * * *", d("2026-10-25T00:30:00Z"))).toBe(true); // first occurrence
+    expect(london.matchesAt("* * * * *", d("2026-10-25T01:30:00Z"))).toBe(true); // second occurrence — real-time
+  });
+
+  test("fall-back: fixed-minute and hour-restricted schedules stay fire-once in the second occurrence", () => {
+    expect(ny.matchesAt("0 * * * *", d("2026-11-01T06:00:00Z"))).toBe(false);
+    expect(ny.matchesAt("30 * * * *", d("2026-11-01T06:30:00Z"))).toBe(false);
+    expect(ny.matchesAt("*/10 1 * * *", d("2026-11-01T06:30:00Z"))).toBe(false);
+    expect(ny.matchesAt("*/10 1 * * *", d("2026-11-01T05:30:00Z"))).toBe(true);
+  });
+
+  test("fall-back: a comma-list minute counts as sub-hourly", () => {
+    expect(ny.matchesAt("0,30 * * * *", d("2026-11-01T06:00:00Z"))).toBe(true);
+    expect(ny.matchesAt("0,30 * * * *", d("2026-11-01T06:30:00Z"))).toBe(true);
+    expect(ny.matchesAt("0,30 * * * *", d("2026-11-01T06:15:00Z"))).toBe(false);
+  });
+
+  test("fall-back: sub-hourly range respects the minute bounds and the overlap edges", () => {
+    expect(ny.matchesAt("30-35 * * * *", d("2026-11-01T06:35:00Z"))).toBe(true);
+    expect(ny.matchesAt("30-35 * * * *", d("2026-11-01T06:36:00Z"))).toBe(false);
+    expect(ny.matchesAt("* * * * *", d("2026-11-01T06:00:00Z"))).toBe(true);
+    expect(ny.matchesAt("* * * * *", d("2026-11-01T06:59:00Z"))).toBe(true);
+    expect(ny.matchesAt("* * * * *", d("2026-11-01T07:00:00Z"))).toBe(true);
+  });
+
+  test("fall-back: sub-hourly schedules fire in the second occurrence for 30-minute and 2-hour overlaps", () => {
+    const lordHowe = createMatcher({ timezone: "Australia/Lord_Howe" });
+    expect(lordHowe.matchesAt("* * * * *", d("2026-04-04T15:10:00Z"))).toBe(true);
+    const troll = createMatcher({ timezone: "Antarctica/Troll" });
+    expect(troll.matchesAt("*/10 * * * *", d("2026-10-25T01:30:00Z"))).toBe(true);
+    expect(troll.matchesAt("*/10 * * * *", d("2026-10-25T01:35:00Z"))).toBe(false);
   });
 });
