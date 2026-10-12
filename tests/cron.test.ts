@@ -259,7 +259,7 @@ describe("DST transitions stay monotonic (no gap stall, no fall-back replay)", (
     expect(london.matchesAt("30 1 * * *", d("2026-10-25T01:30:00Z"))).toBe(false); // second (GMT) — fire-once
   });
 
-  test("fall-back: sub-hourly schedules fire in both occurrences (real-time, like system cron)", () => {
+  test("fall-back: sub-hourly schedules fire in both occurrences", () => {
     // West of UTC (America/New_York): 06:00Z-06:59Z is the second (EST) 01:00-01:59.
     expect(ny.matchesAt("* * * * *", d("2026-11-01T05:30:00Z"))).toBe(true);  // first occurrence
     expect(ny.matchesAt("* * * * *", d("2026-11-01T06:30:00Z"))).toBe(true);  // second occurrence — real-time
