@@ -54,6 +54,12 @@ describe("cronbird help / usage (end-to-end via spawn)", () => {
     expect(err).toContain("Usage:");
   });
 
+  test("no args + empty CRONBIRD_CONFIG → usage on stderr, exit 2", () => {
+    const { code, err } = runCli([], { CRONBIRD_CONFIG: "" });
+    expect(code).toBe(2);
+    expect(err).toContain("Usage:");
+  });
+
   test("a config path first arg is still treated as the daemon (not a usage error)", () => {
     // A non-help, non-subcommand token is a config path → daemon reads it →
     // fails to find the file → fatal exit 1. Proves it did NOT hit the usage

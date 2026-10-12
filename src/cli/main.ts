@@ -23,10 +23,9 @@ async function main(): Promise<void> {
     process.exit(0);
   }
   // No args and no CRONBIRD_CONFIG → the binary is self-describing: usage on
-  // stderr, exit 2. (A config path as argv[2] or CRONBIRD_CONFIG in the
-  // environment both run the daemon below.)
+  // stderr, exit 2.
   const configPath = process.argv[2] ?? process.env.CRONBIRD_CONFIG;
-  if (first === undefined && configPath === undefined) {
+  if (first === undefined && !configPath) {
     process.stderr.write(usageText());
     process.exit(2);
   }
