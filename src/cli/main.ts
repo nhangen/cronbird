@@ -22,9 +22,10 @@ async function main(): Promise<void> {
     process.stdout.write(usageText());
     process.exit(0);
   }
-  // No args → the binary is self-describing: usage on stderr, exit 2. (A
-  // config path as argv[2] still runs the daemon below — unchanged.)
-  if (first === undefined) {
+  // No args and no CRONBIRD_CONFIG → the binary is self-describing: usage on
+  // stderr, exit 2.
+  const configPath = process.argv[2] ?? process.env.CRONBIRD_CONFIG;
+  if (first === undefined && !configPath) {
     process.stderr.write(usageText());
     process.exit(2);
   }
@@ -56,7 +57,6 @@ async function main(): Promise<void> {
     return;
   }
 
-  const configPath = process.argv[2] ?? process.env.CRONBIRD_CONFIG;
   if (!configPath) throw new Error("usage: cronbird <config.json> (or set CRONBIRD_CONFIG)");
   const cfg = parseConfig(readFileSync(configPath, "utf8"), process.env);
   const log = (m: string) => process.stderr.write(`[${nowStamp()}] cronbird: ${m}\n`);
