@@ -272,6 +272,7 @@ describe("simulateSchedule — core fast-forward engine", () => {
     });
 
     expect(report.dispatches.map((x) => x.timeIso)).toEqual([
+      "2026-11-01T06:10:00.000Z",
       "2026-11-01T07:00:00.000Z",
       "2026-11-01T07:01:00.000Z",
       "2026-11-01T07:02:00.000Z",
