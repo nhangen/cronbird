@@ -273,4 +273,33 @@ describe("DST transitions stay monotonic (no gap stall, no fall-back replay)", (
     expect(london.matchesAt("* * * * *", d("2026-10-25T00:30:00Z"))).toBe(true); // first occurrence
     expect(london.matchesAt("* * * * *", d("2026-10-25T01:30:00Z"))).toBe(true); // second occurrence — real-time
   });
+
+  test("fall-back: fixed-minute and hour-restricted schedules stay fire-once in the second occurrence", () => {
+    expect(ny.matchesAt("0 * * * *", d("2026-11-01T06:00:00Z"))).toBe(false);
+    expect(ny.matchesAt("30 * * * *", d("2026-11-01T06:30:00Z"))).toBe(false);
+    expect(ny.matchesAt("*/10 1 * * *", d("2026-11-01T06:30:00Z"))).toBe(false);
+    expect(ny.matchesAt("*/10 1 * * *", d("2026-11-01T05:30:00Z"))).toBe(true);
+  });
+
+  test("fall-back: a comma-list minute counts as sub-hourly", () => {
+    expect(ny.matchesAt("0,30 * * * *", d("2026-11-01T06:00:00Z"))).toBe(true);
+    expect(ny.matchesAt("0,30 * * * *", d("2026-11-01T06:30:00Z"))).toBe(true);
+    expect(ny.matchesAt("0,30 * * * *", d("2026-11-01T06:15:00Z"))).toBe(false);
+  });
+
+  test("fall-back: sub-hourly range respects the minute bounds and the overlap edges", () => {
+    expect(ny.matchesAt("30-35 * * * *", d("2026-11-01T06:35:00Z"))).toBe(true);
+    expect(ny.matchesAt("30-35 * * * *", d("2026-11-01T06:36:00Z"))).toBe(false);
+    expect(ny.matchesAt("* * * * *", d("2026-11-01T06:00:00Z"))).toBe(true);
+    expect(ny.matchesAt("* * * * *", d("2026-11-01T06:59:00Z"))).toBe(true);
+    expect(ny.matchesAt("* * * * *", d("2026-11-01T07:00:00Z"))).toBe(true);
+  });
+
+  test("fall-back: sub-hourly schedules fire in the second occurrence for 30-minute and 2-hour overlaps", () => {
+    const lordHowe = createMatcher({ timezone: "Australia/Lord_Howe" });
+    expect(lordHowe.matchesAt("* * * * *", d("2026-04-04T15:10:00Z"))).toBe(true);
+    const troll = createMatcher({ timezone: "Antarctica/Troll" });
+    expect(troll.matchesAt("*/10 * * * *", d("2026-10-25T01:30:00Z"))).toBe(true);
+    expect(troll.matchesAt("*/10 * * * *", d("2026-10-25T01:35:00Z"))).toBe(false);
+  });
 });
