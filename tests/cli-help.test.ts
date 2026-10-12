@@ -6,8 +6,13 @@ import { HELP_TOKENS, usageText } from "../src/cli/index";
 
 const MAIN = join(import.meta.dir, "../src/cli/main.ts");
 
-function runCli(args: string[]) {
-  const r = Bun.spawnSync(["bun", MAIN, ...args], { stdout: "pipe", stderr: "pipe" });
+function runCli(args: string[], env: Record<string, string> = {}) {
+  const { CRONBIRD_CONFIG: _ignored, ...inherited } = process.env;
+  const r = Bun.spawnSync(["bun", MAIN, ...args], {
+    stdout: "pipe",
+    stderr: "pipe",
+    env: { ...inherited, ...env },
+  });
   return { code: r.exitCode, out: r.stdout.toString(), err: r.stderr.toString() };
 }
 
@@ -110,7 +115,7 @@ describe("cronbird help / usage (end-to-end via spawn)", () => {
       }),
     );
     // timeout kills the forever-running daemon; we only assert it started —
-    // proving the env-var fallback reached the daemon (was usage/exit 2 before).
+    // proving the env-var fallback reached the daemon.
     const r = Bun.spawnSync(["bun", MAIN], {
       stdout: "pipe",
       stderr: "pipe",
