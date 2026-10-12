@@ -87,4 +87,38 @@ describe("cronbird help / usage (end-to-end via spawn)", () => {
     rmSync(dir, { recursive: true, force: true });
     expect(r.stderr.toString()).toContain("started");
   });
+
+  test("no args + CRONBIRD_CONFIG env var starts the daemon (issue #29)", () => {
+    const dir = mkdtempSync(join(tmpdir(), "cronbird-help-env-"));
+    const reg = join(dir, "r.json");
+    writeFileSync(reg, JSON.stringify({ jobs: [] }));
+    const cfg = join(dir, "c.json");
+    writeFileSync(
+      cfg,
+      JSON.stringify({
+        hostname: "ml-1",
+        registryPath: reg,
+        enabledPath: null,
+        topologyPath: null,
+        heartbeatPath: join(dir, "hb.json"),
+        syncedHeartbeatDir: null,
+        dispatchCommand: ["./run.sh"],
+        dispatchArgsTemplate: ["{job}"],
+        maxSleepMs: 60_000,
+        catchupLookbackFloorMs: 3_600_000,
+        catchupLookbackCapMs: 21_600_000,
+      }),
+    );
+    // timeout kills the forever-running daemon; we only assert it started —
+    // proving the env-var fallback reached the daemon (was usage/exit 2 before).
+    const r = Bun.spawnSync(["bun", MAIN], {
+      stdout: "pipe",
+      stderr: "pipe",
+      env: { ...process.env, CRONBIRD_CONFIG: cfg },
+      timeout: 1500,
+    });
+    rmSync(dir, { recursive: true, force: true });
+    expect(r.exitCode).not.toBe(2);
+    expect(r.stderr.toString()).toContain("started");
+  });
 });
