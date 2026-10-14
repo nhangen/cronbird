@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { createMatcher, simulateSchedule, type CronMatcher, type Job, type JobMatcherResolver } from "../src/core/index";
+import { createMatcher, InvalidTimezoneError, simulateSchedule, type CronMatcher, type Job, type JobMatcherResolver } from "../src/core/index";
 
 const m = createMatcher({ timezone: "UTC" });
 const d = (iso: string) => new Date(iso);
@@ -343,10 +343,7 @@ describe("simulateSchedule — skipped-job diagnostics", () => {
       matcher: m,
     });
 
-    expect(report.warnings).toEqual([
-      'typo: invalid cron schedule "0 25 * * *"',
-      'typo: invalid cron schedule "0 25 * * *" (invalid cron expression: "0 25 * * *" (CronPattern: Invalid value for hour: 25))',
-    ]);
+    expect(report.warnings).toEqual(['typo: invalid cron schedule "0 25 * * *"']);
     expect(report.dispatches.map((x) => x.job)).toEqual(["ok", "ok"]);
   });
 
@@ -386,6 +383,47 @@ describe("simulateSchedule — skipped-job diagnostics", () => {
         matcherResolver: resolver,
       }),
     ).toThrow(/internal matcher error for boom/);
+  });
+
+  // Each matcher call site in the fast-forward must carry the fault handlers on
+  // its own; the pre-start probe and the other call would otherwise mask a
+  // dropped argument (#72).
+  const internalOnly = (broken: "matchesAt" | "nextFire"): JobMatcherResolver => ({
+    resolve: () => ({
+      nextFire: broken === "nextFire" ? () => { throw new Error("engine exploded"); } : m.nextFire.bind(m),
+      matchesAt: broken === "matchesAt" ? () => { throw new Error("engine exploded"); } : m.matchesAt.bind(m),
+    }),
+  });
+  const runWith = (resolver: JobMatcherResolver) =>
+    simulateSchedule({
+      from: d("2026-06-01T09:00:00Z"),
+      to: d("2026-06-01T10:00:00Z"),
+      host: "ml-1",
+      jobs: [pb({ name: "boom", cronSchedule: "0 9 * * *" })],
+      enabled: new Set(["boom"]),
+      owners: {},
+      matcher: m,
+      matcherResolver: resolver,
+    });
+
+  test("aborts when only the dueAt matcher call faults (#72)", () => {
+    expect(() => runWith(internalOnly("matchesAt"))).toThrow(/internal matcher error for boom/);
+  });
+
+  test("aborts when only the nextWake matcher call faults (#72)", () => {
+    expect(() => runWith(internalOnly("nextFire"))).toThrow(/internal matcher error for boom/);
+  });
+
+  test("an invalid timezone warns once instead of aborting the run (#72)", () => {
+    const resolver: JobMatcherResolver = {
+      resolve: () => {
+        throw new InvalidTimezoneError("Mars/Olympus");
+      },
+    };
+    const report = runWith(resolver);
+    expect(report.warnings).toHaveLength(1);
+    expect(report.warnings[0]).toMatch(/^boom: invalid cron schedule/);
+    expect(report.dispatches).toEqual([]);
   });
 });
 

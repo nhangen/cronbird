@@ -56,6 +56,7 @@ function describeSkippedJobs<T>(
   options: SimulateOptions<T>,
   selected: Job<T>[],
   resolve: (job: Job<T>) => CronMatcher,
+  warnedInvalid: Set<string>,
 ): { skipped: string[]; warnings: string[] } {
   const selectedNames = new Set(selected.map((j) => j.name));
   const skipped: string[] = [];
@@ -77,6 +78,7 @@ function describeSkippedJobs<T>(
       const m = resolve(job);
       next = m.nextFire(job.cronSchedule, options.from);
     } catch {
+      warnedInvalid.add(job.name);
       warnings.push(`${job.name}: invalid cron schedule ${JSON.stringify(job.cronSchedule)}`);
       continue;
     }
@@ -105,7 +107,8 @@ export function simulateSchedule<T = unknown>(options: SimulateOptions<T>): Simu
   const { invalid, warnings: depWarnings } = validateDependencies(options.jobs, upstreamsOf);
   const runnable = invalid.size ? selected.filter((j) => !invalid.has(j.name)) : selected;
 
-  const { skipped, warnings: scheduleWarnings } = describeSkippedJobs(options, selected, (job) => resolver.resolve(job));
+  const warnedInvalid = new Set<string>();
+  const { skipped, warnings: scheduleWarnings } = describeSkippedJobs(options, selected, (job) => resolver.resolve(job), warnedInvalid);
   const warnings = [...depWarnings, ...scheduleWarnings];
   const dispatches: SimulatedDispatch[] = [];
 
@@ -114,8 +117,8 @@ export function simulateSchedule<T = unknown>(options: SimulateOptions<T>): Simu
   // otherwise re-warn every minute); unexpected matcher errors (probe
   // exhaustion, engine failures, an injected matcher throwing) abort the run —
   // a dry run that silently drops a job's fires would be exactly the "not due"
-  // lie the daemon must not tell (#72).
-  const warnedInvalid = new Set<string>();
+  // lie the daemon must not tell (#72). `warnedInvalid` is seeded by the
+  // pre-start probe so a job it already reported is not warned about twice.
   const matcherFaults: MatcherFaultHandlers = {
     onInvalid: (job, error) => {
       if (warnedInvalid.has(job.name)) return;
