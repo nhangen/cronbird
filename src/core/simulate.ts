@@ -9,7 +9,7 @@ import { catchUpFires, lookbackForSchedule } from "./catchup";
 import { CATCHUP_LOOKBACK_CAP_MS, CATCHUP_LOOKBACK_FLOOR_MS } from "./constants";
 import { createMatcher, createJobMatcherResolver, type CronMatcher, type JobMatcherResolver } from "./cron";
 import { validateDependencies } from "./dependencies";
-import { dueAt, nextWake, selectRunnable } from "./select";
+import { classifyMatcherError, dueAt, nextWake, selectRunnable, type MatcherFaultHandlers } from "./select";
 import type { Heartbeat, Job } from "./types";
 
 export interface SimulateOptions<T = unknown> {
@@ -56,6 +56,7 @@ function describeSkippedJobs<T>(
   options: SimulateOptions<T>,
   selected: Job<T>[],
   resolve: (job: Job<T>) => CronMatcher,
+  warnedInvalid: Set<string>,
 ): { skipped: string[]; warnings: string[] } {
   const selectedNames = new Set(selected.map((j) => j.name));
   const skipped: string[] = [];
@@ -76,7 +77,12 @@ function describeSkippedJobs<T>(
     try {
       const m = resolve(job);
       next = m.nextFire(job.cronSchedule, options.from);
-    } catch {
+    } catch (err) {
+      if (classifyMatcherError(err) === "internal") {
+        const msg = err instanceof Error ? err.message : String(err);
+        throw new Error(`simulate: internal matcher error for ${job.name} (schedule ${JSON.stringify(job.cronSchedule)}): ${msg}`);
+      }
+      warnedInvalid.add(job.name);
       warnings.push(`${job.name}: invalid cron schedule ${JSON.stringify(job.cronSchedule)}`);
       continue;
     }
@@ -105,9 +111,28 @@ export function simulateSchedule<T = unknown>(options: SimulateOptions<T>): Simu
   const { invalid, warnings: depWarnings } = validateDependencies(options.jobs, upstreamsOf);
   const runnable = invalid.size ? selected.filter((j) => !invalid.has(j.name)) : selected;
 
-  const { skipped, warnings: scheduleWarnings } = describeSkippedJobs(options, selected, (job) => resolver.resolve(job));
+  const warnedInvalid = new Set<string>();
+  const { skipped, warnings: scheduleWarnings } = describeSkippedJobs(options, selected, (job) => resolver.resolve(job), warnedInvalid);
   const warnings = [...depWarnings, ...scheduleWarnings];
   const dispatches: SimulatedDispatch[] = [];
+
+  // Matcher faults during the fast-forward: invalid schedules are surfaced as
+  // warnings (a dry run exists to show them, and the per-tick loop would
+  // otherwise re-warn every minute); unexpected matcher errors (probe
+  // exhaustion, engine failures, an injected matcher throwing) abort the run —
+  // a dry run that silently drops a job's fires would be exactly the "not due"
+  // lie the daemon must not tell (#72). `warnedInvalid` is seeded by the
+  // pre-start probe so a job it already reported is not warned about twice.
+  const matcherFaults: MatcherFaultHandlers = {
+    onInvalid: (job, error) => {
+      if (warnedInvalid.has(job.name)) return;
+      warnedInvalid.add(job.name);
+      warnings.push(`${job.name}: invalid cron schedule ${JSON.stringify(job.cronSchedule)} (${error.message})`);
+    },
+    onInternalError: (job, error) => {
+      throw new Error(`simulate: internal matcher error for ${job.name} (schedule ${JSON.stringify(job.cronSchedule)}): ${error.message}`);
+    },
+  };
 
   if (runnable.length === 0) {
     return {
@@ -154,7 +179,7 @@ export function simulateSchedule<T = unknown>(options: SimulateOptions<T>): Simu
     const minute = Math.floor(currentMs / 60_000);
     const minuteStart = minute * 60_000;
 
-    const due = dueAt(runnable, cursor, (p) => resolver.resolve(p));
+    const due = dueAt(runnable, cursor, (p) => resolver.resolve(p), matcherFaults);
     const dueNames = new Set(due.map((j) => j.name));
 
     // Only T0 can have missed slots: from then on the simulation itself fires every slot.
@@ -201,7 +226,7 @@ export function simulateSchedule<T = unknown>(options: SimulateOptions<T>): Simu
       dispatches.push(item);
     }
 
-    const wake = nextWake(runnable, cursor, (p) => resolver.resolve(p), Infinity);
+    const wake = nextWake(runnable, cursor, (p) => resolver.resolve(p), Infinity, matcherFaults);
     if (wake === Infinity) {
       break;
     }

@@ -252,7 +252,23 @@ export function runOneTick<T>(deps: DaemonDeps<T>, state: TickState<T>, hostReso
   // returns slots strictly before the current minute, so it can't already
   // overlap `due` today — but it keeps a single tick from double-dispatching a
   // job if that exclusion ever changes.
-  const due = dueAt(runnable, now, (p) => hostResolver.resolve(p)).filter((p) => {
+  //
+  // Matcher faults are surfaced here: an invalid schedule logs (operator
+  // should fix the registry); an unexpected matcher error (probe exhaustion,
+  // engine failure) also logs, so an internal failure is no longer
+  // indistinguishable from "not due" (#72). Either way the job is skipped for
+  // this minute — the daemon must not crash the tick over one job. Neither
+  // log is deduped: a persistent fault logs from both dueAt and nextWake on
+  // every tick until it is fixed.
+  const matcherFaults = {
+    onInvalid: (job: Job<unknown>, error: Error) => {
+      deps.log(`schedule: ${job.name} has an invalid schedule ${JSON.stringify(job.cronSchedule)}: ${error.message}`);
+    },
+    onInternalError: (job: Job<unknown>, error: Error) => {
+      deps.log(`matcher: internal error for ${job.name} (schedule ${JSON.stringify(job.cronSchedule)}, at ${now.toISOString()}): ${error.message}`);
+    },
+  };
+  const due = dueAt(runnable, now, (p) => hostResolver.resolve(p), matcherFaults).filter((p) => {
     const lastGuard = state.guard.get(p.name);
     if (lastGuard !== undefined && lastGuard >= minute) return false;
     const lastFired = state.lastFired[p.name];
@@ -388,7 +404,7 @@ export function runOneTick<T>(deps: DaemonDeps<T>, state: TickState<T>, hostReso
     }
   }
 
-  const wake = nextWake(runnable, now, (p) => hostResolver.resolve(p), deps.maxSleepMs);
+  const wake = nextWake(runnable, now, (p) => hostResolver.resolve(p), deps.maxSleepMs, matcherFaults);
 
   // SELECT the drain set up to MAX_CONCURRENT, highest priority first among the
   // dependency-eligible. `running` comes from the wrapper's `done/`+`running/`
