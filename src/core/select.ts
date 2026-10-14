@@ -30,7 +30,7 @@ export interface MatcherFaultHandlers {
   onInternalError?(job: Job<unknown>, error: Error): void;
 }
 
-function classifyMatcherError(err: unknown): "invalid" | "internal" {
+export function classifyMatcherError(err: unknown): "invalid" | "internal" {
   if (err instanceof CronExpressionError || err instanceof InvalidTimezoneError) return "invalid";
   return "internal";
 }

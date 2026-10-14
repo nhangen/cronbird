@@ -388,12 +388,23 @@ describe("simulateSchedule — skipped-job diagnostics", () => {
   // Each matcher call site in the fast-forward must carry the fault handlers on
   // its own; the pre-start probe and the other call would otherwise mask a
   // dropped argument (#72).
-  const internalOnly = (broken: "matchesAt" | "nextFire"): JobMatcherResolver => ({
-    resolve: () => ({
-      nextFire: broken === "nextFire" ? () => { throw new Error("engine exploded"); } : m.nextFire.bind(m),
-      matchesAt: broken === "matchesAt" ? () => { throw new Error("engine exploded"); } : m.matchesAt.bind(m),
-    }),
-  });
+  // The nextFire fault starts after the pre-start probe's single call, so it
+  // reaches the fast-forward's nextWake rather than aborting in the probe.
+  const internalOnly = (broken: "matchesAt" | "nextFire"): JobMatcherResolver => {
+    let nextFireCalls = 0;
+    return {
+      resolve: () => ({
+        nextFire: (expr, from) => {
+          if (broken === "nextFire" && ++nextFireCalls > 1) throw new Error("engine exploded");
+          return m.nextFire(expr, from);
+        },
+        matchesAt: (expr, when) => {
+          if (broken === "matchesAt") throw new Error("engine exploded");
+          return m.matchesAt(expr, when);
+        },
+      }),
+    };
+  };
   const runWith = (resolver: JobMatcherResolver) =>
     simulateSchedule({
       from: d("2026-06-01T09:00:00Z"),
@@ -405,6 +416,13 @@ describe("simulateSchedule — skipped-job diagnostics", () => {
       matcher: m,
       matcherResolver: resolver,
     });
+
+  test("aborts when the pre-start probe hits an internal matcher error (#72)", () => {
+    const resolver: JobMatcherResolver = {
+      resolve: () => ({ nextFire: () => { throw new Error("engine exploded"); }, matchesAt: m.matchesAt.bind(m) }),
+    };
+    expect(() => runWith(resolver)).toThrow(/internal matcher error for boom.*engine exploded/);
+  });
 
   test("aborts when only the dueAt matcher call faults (#72)", () => {
     expect(() => runWith(internalOnly("matchesAt"))).toThrow(/internal matcher error for boom/);

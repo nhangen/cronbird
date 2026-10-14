@@ -9,7 +9,7 @@ import { catchUpFires, lookbackForSchedule } from "./catchup";
 import { CATCHUP_LOOKBACK_CAP_MS, CATCHUP_LOOKBACK_FLOOR_MS } from "./constants";
 import { createMatcher, createJobMatcherResolver, type CronMatcher, type JobMatcherResolver } from "./cron";
 import { validateDependencies } from "./dependencies";
-import { dueAt, nextWake, selectRunnable, type MatcherFaultHandlers } from "./select";
+import { classifyMatcherError, dueAt, nextWake, selectRunnable, type MatcherFaultHandlers } from "./select";
 import type { Heartbeat, Job } from "./types";
 
 export interface SimulateOptions<T = unknown> {
@@ -77,7 +77,11 @@ function describeSkippedJobs<T>(
     try {
       const m = resolve(job);
       next = m.nextFire(job.cronSchedule, options.from);
-    } catch {
+    } catch (err) {
+      if (classifyMatcherError(err) === "internal") {
+        const msg = err instanceof Error ? err.message : String(err);
+        throw new Error(`simulate: internal matcher error for ${job.name} (schedule ${JSON.stringify(job.cronSchedule)}): ${msg}`);
+      }
       warnedInvalid.add(job.name);
       warnings.push(`${job.name}: invalid cron schedule ${JSON.stringify(job.cronSchedule)}`);
       continue;
