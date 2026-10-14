@@ -3,6 +3,7 @@ export { createMatcher, createJobMatcherResolver, assertValidTimezone, matcherFo
 export type { CronMatcher, JobMatcherResolver, MatcherOptions } from "./cron";
 export { InvalidTimezoneError } from "./cron";
 export { selectRunnable, dueAt, nextWake } from "./select";
+export type { MatcherFaultHandlers } from "./select";
 export { catchUpFires, lookbackForSchedule } from "./catchup";
 export { runForever } from "./daemon";
 export type { DaemonDeps } from "./daemon";

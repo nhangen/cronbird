@@ -343,7 +343,10 @@ describe("simulateSchedule — skipped-job diagnostics", () => {
       matcher: m,
     });
 
-    expect(report.warnings).toEqual(['typo: invalid cron schedule "0 25 * * *"']);
+    expect(report.warnings).toEqual([
+      'typo: invalid cron schedule "0 25 * * *"',
+      'typo: invalid cron schedule "0 25 * * *" (invalid cron expression: "0 25 * * *" (CronPattern: Invalid value for hour: 25))',
+    ]);
     expect(report.dispatches.map((x) => x.job)).toEqual(["ok", "ok"]);
   });
 
@@ -359,6 +362,30 @@ describe("simulateSchedule — skipped-job diagnostics", () => {
     });
 
     expect(report.warnings).toEqual(['feb30: schedule "0 0 30 2 *" never fires']);
+  });
+
+  test("aborts on an internal matcher error instead of silently skipping the job (#72)", () => {
+    const boom: CronMatcher = {
+      nextFire: () => {
+        throw new Error("no fire after 2026-06-01T09:00:00.000Z within 180 minutes of probing");
+      },
+      matchesAt: () => {
+        throw new Error("no fire after 2026-06-01T09:00:00.000Z within 180 minutes of probing");
+      },
+    };
+    const resolver: JobMatcherResolver = { resolve: () => boom };
+    expect(() =>
+      simulateSchedule({
+        from: d("2026-06-01T09:00:00Z"),
+        to: d("2026-06-01T10:00:00Z"),
+        host: "ml-1",
+        jobs: [pb({ name: "boom", cronSchedule: "0 9 * * *" }), pb({ name: "ok", cronSchedule: "0 * * * *" })],
+        enabled: new Set(["boom", "ok"]),
+        owners: {},
+        matcher: m,
+        matcherResolver: resolver,
+      }),
+    ).toThrow(/internal matcher error for boom/);
   });
 });
 

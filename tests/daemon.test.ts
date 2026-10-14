@@ -1093,6 +1093,55 @@ describe("matcher injection", () => {
   });
 });
 
+describe("runForever — matcher faults (#72)", () => {
+  const boomError = () => new Error("no fire after 2026-06-01T08:59:59.000Z within 180 minutes of probing");
+
+  // Resolver that only faults for the job named "boom"; everything else
+  // delegates to the harness's real croner-backed matcher.
+  const boomResolver = (delegate: CronMatcher): JobMatcherResolver => ({
+    resolve: (job) => {
+      if (job.name === "boom") {
+        return { nextFire: () => { throw boomError(); }, matchesAt: () => { throw boomError(); } };
+      }
+      return delegate;
+    },
+  });
+
+  test("an invalid schedule is logged once per tick with its name, schedule and error", async () => {
+    const h = harness({
+      nows: [d("2026-06-01T09:00:00Z")],
+      playbooks: [pb({ name: "typo", cronSchedule: "0 25 * * *" }), pb({ name: "nine", cronSchedule: "0 9 * * *" })],
+    });
+    await runForever(h.deps);
+    expect(h.dispatched).toEqual(["nine"]);
+    const invalid = h.logs.filter((l) => l.startsWith("schedule: typo "));
+    // dueAt (matchesAt) and nextWake (nextFire) each classify the same bad job
+    // once per tick (documented in select.ts); valid jobs are unaffected.
+    expect(invalid).toHaveLength(2);
+    expect(invalid[0]).toContain('"0 25 * * *"');
+    expect(invalid[0]).toMatch(/invalid cron expression/);
+  });
+
+  test("an internal matcher error is logged as a fault (not 'not due'), and the tick survives", async () => {
+    const h = harness({
+      nows: [d("2026-06-01T09:00:00Z")],
+      // Both jobs fire at 09:00; only "boom"'s matcher is faulted.
+      playbooks: [pb({ name: "boom", cronSchedule: "0 9 * * *" }), pb({ name: "nine", cronSchedule: "0 9 * * *" })],
+    });
+    h.deps.matcherResolver = boomResolver(h.deps.matcher);
+    await runForever(h.deps);
+    expect(h.dispatched).toEqual(["nine"]);
+    const internal = h.logs.filter((l) => l.startsWith("matcher: internal error for boom "));
+    expect(internal).toHaveLength(2); // dueAt (matchesAt) + nextWake (nextFire)
+    for (const line of internal) {
+      expect(line).toContain('"0 9 * * *"');
+      expect(line).toContain("no fire after");
+    }
+    // No "schedule:" log for an internal fault — it's a matcher fault, not an invalid expression.
+    expect(h.logs.filter((l) => l.startsWith("schedule: boom "))).toHaveLength(0);
+  });
+});
+
 describe("run history recording — Ticket #3", () => {
   test("dispatch records an in-flight RunRecord with slotTs and startedAt", async () => {
     const now = d("2026-06-01T09:00:00Z");

@@ -91,6 +91,38 @@ describe("dueAt — minute-granular fire set", () => {
     const pbs = [pb({ name: "bad", cronSchedule: "not a cron" }), pb({ name: "ok", cronSchedule: "0 9 * * *" })];
     expect(dueAt(pbs, d("2026-06-01T09:00:00Z"), mf).map((p) => p.name)).toEqual(["ok"]);
   });
+
+  test("reports an invalid schedule once per job via onInvalid (#72)", () => {
+    const seen: string[] = [];
+    const pbs = [pb({ name: "bad", cronSchedule: "not a cron" }), pb({ name: "ok", cronSchedule: "0 9 * * *" })];
+    const due = dueAt(pbs, d("2026-06-01T09:00:00Z"), mf, {
+      onInvalid: (job, err) => seen.push(`${job.name}: ${err.message}`),
+    });
+    expect(due.map((p) => p.name)).toEqual(["ok"]);
+    expect(seen).toHaveLength(1);
+    expect(seen[0]).toMatch(/^bad: invalid cron expression: "not a cron"/);
+  });
+
+  test("reports an internal matcher error via onInternalError, not onInvalid (#72)", () => {
+    const invalid: string[] = [];
+    const internal: string[] = [];
+    const boomMatcher = {
+      nextFire: () => {
+        throw new Error("engine exploded");
+      },
+      matchesAt: () => {
+        throw new Error("engine exploded");
+      },
+    };
+    const pbs = [pb({ name: "boom", cronSchedule: "0 9 * * *" }), pb({ name: "ok", cronSchedule: "0 9 * * *" })];
+    const due = dueAt(pbs, d("2026-06-01T09:00:00Z"), (job) => (job.name === "boom" ? boomMatcher : m), {
+      onInvalid: (job) => invalid.push(job.name),
+      onInternalError: (job, err) => internal.push(`${job.name}: ${err.message}`),
+    });
+    expect(due.map((p) => p.name)).toEqual(["ok"]); // still skipped, tick survives
+    expect(invalid).toEqual([]);
+    expect(internal).toEqual(["boom: engine exploded"]);
+  });
 });
 
 describe("nextWake — ms until the soonest next fire, capped", () => {
@@ -122,5 +154,36 @@ describe("nextWake — ms until the soonest next fire, capped", () => {
   test("ignores invalid schedules rather than throwing", () => {
     const pbs = [pb({ name: "bad", cronSchedule: "99 * * * *" }), pb({ name: "ok", cronSchedule: "*/5 * * * *" })];
     expect(nextWake(pbs, d("2026-06-01T12:04:30Z"), mf, CAP)).toBe(30_000);
+  });
+
+  test("reports invalid and internal matcher faults separately (#72)", () => {
+    const invalid: string[] = [];
+    const internal: string[] = [];
+    const boomMatcher = {
+      nextFire: () => {
+        throw new Error("probe budget exhausted");
+      },
+      matchesAt: () => {
+        throw new Error("engine exploded");
+      },
+    };
+    const pbs = [
+      pb({ name: "bad", cronSchedule: "99 * * * *" }),
+      pb({ name: "boom", cronSchedule: "0 9 * * *" }),
+      pb({ name: "ok", cronSchedule: "*/5 * * * *" }),
+    ];
+    const wake = nextWake(
+      pbs,
+      d("2026-06-01T12:04:30Z"),
+      (job) => (job.name === "boom" ? boomMatcher : m),
+      CAP,
+      {
+        onInvalid: (job) => invalid.push(job.name),
+        onInternalError: (job, err) => internal.push(`${job.name}: ${err.message}`),
+      },
+    );
+    expect(wake).toBe(30_000); // healthy job still bounds the wake
+    expect(invalid).toEqual(["bad"]);
+    expect(internal).toEqual(["boom: probe budget exhausted"]);
   });
 });

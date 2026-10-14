@@ -9,7 +9,7 @@ import { catchUpFires, lookbackForSchedule } from "./catchup";
 import { CATCHUP_LOOKBACK_CAP_MS, CATCHUP_LOOKBACK_FLOOR_MS } from "./constants";
 import { createMatcher, createJobMatcherResolver, type CronMatcher, type JobMatcherResolver } from "./cron";
 import { validateDependencies } from "./dependencies";
-import { dueAt, nextWake, selectRunnable } from "./select";
+import { dueAt, nextWake, selectRunnable, type MatcherFaultHandlers } from "./select";
 import type { Heartbeat, Job } from "./types";
 
 export interface SimulateOptions<T = unknown> {
@@ -109,6 +109,24 @@ export function simulateSchedule<T = unknown>(options: SimulateOptions<T>): Simu
   const warnings = [...depWarnings, ...scheduleWarnings];
   const dispatches: SimulatedDispatch[] = [];
 
+  // Matcher faults during the fast-forward: invalid schedules are surfaced as
+  // warnings (a dry run exists to show them, and the per-tick loop would
+  // otherwise re-warn every minute); unexpected matcher errors (probe
+  // exhaustion, engine failures, an injected matcher throwing) abort the run —
+  // a dry run that silently drops a job's fires would be exactly the "not due"
+  // lie the daemon must not tell (#72).
+  const warnedInvalid = new Set<string>();
+  const matcherFaults: MatcherFaultHandlers = {
+    onInvalid: (job, error) => {
+      if (warnedInvalid.has(job.name)) return;
+      warnedInvalid.add(job.name);
+      warnings.push(`${job.name}: invalid cron schedule ${JSON.stringify(job.cronSchedule)} (${error.message})`);
+    },
+    onInternalError: (job, error) => {
+      throw new Error(`simulate: internal matcher error for ${job.name} (schedule ${JSON.stringify(job.cronSchedule)}): ${error.message}`);
+    },
+  };
+
   if (runnable.length === 0) {
     return {
       host: options.host,
@@ -154,7 +172,7 @@ export function simulateSchedule<T = unknown>(options: SimulateOptions<T>): Simu
     const minute = Math.floor(currentMs / 60_000);
     const minuteStart = minute * 60_000;
 
-    const due = dueAt(runnable, cursor, (p) => resolver.resolve(p));
+    const due = dueAt(runnable, cursor, (p) => resolver.resolve(p), matcherFaults);
     const dueNames = new Set(due.map((j) => j.name));
 
     // Only T0 can have missed slots: from then on the simulation itself fires every slot.
@@ -201,7 +219,7 @@ export function simulateSchedule<T = unknown>(options: SimulateOptions<T>): Simu
       dispatches.push(item);
     }
 
-    const wake = nextWake(runnable, cursor, (p) => resolver.resolve(p), Infinity);
+    const wake = nextWake(runnable, cursor, (p) => resolver.resolve(p), Infinity, matcherFaults);
     if (wake === Infinity) {
       break;
     }
