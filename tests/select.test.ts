@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { createMatcher, matcherForJob } from "../src/core/cron";
+import { createMatcher, InvalidTimezoneError, matcherForJob } from "../src/core/cron";
 import type { Job } from "../src/core/types";
 import { dueAt, nextWake, selectRunnable } from "../src/core/select";
 
@@ -101,6 +101,38 @@ describe("dueAt — minute-granular fire set", () => {
     expect(due.map((p) => p.name)).toEqual(["ok"]);
     expect(seen).toHaveLength(1);
     expect(seen[0]).toMatch(/^bad: invalid cron expression: "not a cron"/);
+  });
+
+  test("classifies an invalid timezone as invalid, not internal (#72)", () => {
+    const invalid: string[] = [];
+    const internal: string[] = [];
+    const due = dueAt([pb({ name: "badzone" })], d("2026-06-01T09:00:00Z"), () => {
+      throw new InvalidTimezoneError("Mars/Olympus");
+    }, {
+      onInvalid: (job, err) => invalid.push(`${job.name}: ${err.message}`),
+      onInternalError: (job) => internal.push(job.name),
+    });
+    expect(due).toEqual([]);
+    expect(invalid).toHaveLength(1);
+    expect(invalid[0]).toMatch(/^badzone: invalid timezone/);
+    expect(internal).toEqual([]);
+  });
+
+  test("wraps a non-Error throw before reporting it (#72)", () => {
+    const internal: Error[] = [];
+    dueAt([pb({ name: "str" })], d("2026-06-01T09:00:00Z"), () => {
+      throw "plain string";
+    }, { onInternalError: (_job, err) => internal.push(err) });
+    expect(internal).toHaveLength(1);
+    expect(internal[0]).toBeInstanceOf(Error);
+    expect(internal[0]!.message).toBe("plain string");
+  });
+
+  test("without handlers a faulting job is still skipped (backward compatible)", () => {
+    expect(
+      dueAt([pb({ name: "bad", cronSchedule: "not a cron" })], d("2026-06-01T09:00:00Z"), mf),
+    ).toEqual([]);
+    expect(nextWake([pb({ name: "bad", cronSchedule: "not a cron" })], d("2026-06-01T09:00:00Z"), mf, 60_000)).toBe(60_000);
   });
 
   test("reports an internal matcher error via onInternalError, not onInvalid (#72)", () => {

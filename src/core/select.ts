@@ -5,7 +5,7 @@
  * injects `now` and a {@link CronMatcher}. That keeps the scheduling logic
  * exhaustively unit-testable without sleeping or spawning.
  */
-import { CronExpressionError, type CronMatcher } from "./cron";
+import { CronExpressionError, InvalidTimezoneError, type CronMatcher } from "./cron";
 import type { Job } from "./types";
 
 /**
@@ -31,12 +31,18 @@ export interface MatcherFaultHandlers {
 }
 
 function classifyMatcherError(err: unknown): "invalid" | "internal" {
-  if (err instanceof CronExpressionError) return "invalid";
+  if (err instanceof CronExpressionError || err instanceof InvalidTimezoneError) return "invalid";
   return "internal";
 }
 
 function errMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
+}
+
+function reportMatcherFault(job: Job<unknown>, err: unknown, handlers: MatcherFaultHandlers | undefined): void {
+  const error = err instanceof Error ? err : new Error(errMessage(err));
+  if (classifyMatcherError(err) === "invalid") handlers?.onInvalid?.(job, error);
+  else handlers?.onInternalError?.(job, error);
 }
 
 /**
@@ -79,11 +85,7 @@ export function dueAt<T>(
     try {
       return matcherFor(p).matchesAt(p.cronSchedule, when);
     } catch (err) {
-      if (classifyMatcherError(err) === "invalid") {
-        handlers?.onInvalid?.(p, err instanceof Error ? err : new Error(errMessage(err)));
-      } else {
-        handlers?.onInternalError?.(p, err instanceof Error ? err : new Error(errMessage(err)));
-      }
+      reportMatcherFault(p, err, handlers);
       return false;
     }
   });
@@ -114,11 +116,7 @@ export function nextWake<T>(
     try {
       next = matcherFor(p).nextFire(p.cronSchedule, from);
     } catch (err) {
-      if (classifyMatcherError(err) === "invalid") {
-        handlers?.onInvalid?.(p, err instanceof Error ? err : new Error(errMessage(err)));
-      } else {
-        handlers?.onInternalError?.(p, err instanceof Error ? err : new Error(errMessage(err)));
-      }
+      reportMatcherFault(p, err, handlers);
       continue;
     }
     if (next !== null) soonest = Math.min(soonest, next.getTime());
