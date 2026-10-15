@@ -249,6 +249,28 @@ describe("DST transitions stay monotonic (no gap stall; wall-clock schedules fir
     expect(troll.matchesAt("30 1 * * *", d("2026-10-25T01:30:00Z"))).toBe(false);
   });
 
+  test("fall-back with a 3-hour overlap (Antarctica/Casey) fires at the first occurrence", () => {
+    // 2023-03-09 03:00 +11 → 00:00 +08; 01:30 local fires at +11 = 2023-03-08T14:30:00Z (not 17:30:00Z).
+    const casey = createMatcher({ timezone: "Antarctica/Casey" });
+    expect(casey.nextFire("30 1 * * *", d("2023-03-08T12:00:00Z"))).toEqual(d("2023-03-08T14:30:00Z"));
+    expect(casey.matchesAt("30 1 * * *", d("2023-03-08T14:30:00Z"))).toBe(true);
+    expect(casey.matchesAt("30 1 * * *", d("2023-03-08T17:30:00Z"))).toBe(false);
+  });
+
+  test("fall-back with a 3-hour overlap (Antarctica/Casey): every-minute schedule skips the second occurrence", () => {
+    const casey = createMatcher({ timezone: "Antarctica/Casey" });
+    expect(casey.nextFire("* * * * *", d("2023-03-08T15:59:00Z"))).toEqual(d("2023-03-08T19:00:00Z"));
+    expect(casey.nextFire("* * * * *", d("2023-03-08T17:00:00Z"))).toEqual(d("2023-03-08T19:00:00Z"));
+    // Starting at the transition instant needs 180 probes; a cap of 179 or less throws.
+    expect(casey.nextFire("* * * * *", d("2023-03-08T16:00:00Z"))).toEqual(d("2023-03-08T19:00:00Z"));
+  });
+
+  test("fall-back with a 3-hour overlap (Antarctica/Casey): instants after the overlap are not rewritten", () => {
+    const casey = createMatcher({ timezone: "Antarctica/Casey" });
+    expect(casey.matchesAt("0 4 * * *", d("2023-03-08T20:00:00Z"))).toBe(true);
+    expect(casey.nextFire("0 4 * * *", d("2023-03-08T19:30:00Z"))).toEqual(d("2023-03-08T20:00:00Z"));
+  });
+
   test("fall-back: matchesAt returns true for first occurrence and false for second across zones", () => {
     // West of UTC (America/New_York)
     expect(ny.matchesAt("30 1 * * *", d("2026-11-01T05:30:00Z"))).toBe(true);  // first (EDT)
@@ -295,12 +317,16 @@ describe("DST transitions stay monotonic (no gap stall; wall-clock schedules fir
     expect(ny.matchesAt("* * * * *", d("2026-11-01T07:00:00Z"))).toBe(true);
   });
 
-  test("fall-back: sub-hourly schedules fire in the second occurrence for 30-minute and 2-hour overlaps", () => {
+  test("fall-back: sub-hourly schedules fire in the second occurrence for 30-minute, 2-hour, and 3-hour overlaps", () => {
     const lordHowe = createMatcher({ timezone: "Australia/Lord_Howe" });
     expect(lordHowe.matchesAt("* * * * *", d("2026-04-04T15:10:00Z"))).toBe(true);
     const troll = createMatcher({ timezone: "Antarctica/Troll" });
     expect(troll.matchesAt("*/10 * * * *", d("2026-10-25T01:30:00Z"))).toBe(true);
     expect(troll.matchesAt("*/10 * * * *", d("2026-10-25T01:35:00Z"))).toBe(false);
+    const casey = createMatcher({ timezone: "Antarctica/Casey" });
+    expect(casey.matchesAt("*/10 * * * *", d("2023-03-08T14:30:00Z"))).toBe(true);
+    expect(casey.matchesAt("*/10 * * * *", d("2023-03-08T17:30:00Z"))).toBe(true);
+    expect(casey.matchesAt("*/10 * * * *", d("2023-03-08T17:35:00Z"))).toBe(false);
   });
 
   test("fall-back: nextFire returns second-occurrence instants for sub-hourly schedules in America/New_York (#71)", () => {
