@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { explainJob, createMatcher, type Heartbeat, type Job, type RunRecord } from "../src/core/index";
+import { explainJob, createMatcher, InvalidTimezoneError, type Heartbeat, type Job, type RunRecord } from "../src/core/index";
 
 const matcher = createMatcher();
 // Fixed reference instant: 2026-07-01T12:00:00Z (noon UTC, top of hour).
@@ -238,6 +238,20 @@ describe("explainJob — schedule validity", () => {
         heartbeat: null, matcher: broken, now: NOW,
       }),
     ).toThrow("matcher bug");
+  });
+
+  test("InvalidTimezoneError is reported as scheduleError, not rethrown (#74)", () => {
+    const tzMatcher = {
+      nextFire: () => { throw new InvalidTimezoneError("Mars/Phobos"); },
+      matchesAt: () => false,
+    };
+    const r = explainJob({
+      jobs: [job({ name: "alpha", timezone: "Mars/Phobos" })], name: "alpha", host: "ml-1",
+      enabled: new Set(["alpha"]), owners: {}, heartbeat: null, matcher: tzMatcher, now: NOW,
+    });
+    expect(r.scheduleValid).toBe(false);
+    expect(r.scheduleError).toContain("invalid timezone");
+    expect(r.nextFires).toEqual([]);
   });
 
   test("blank schedule → not runnable, schedule gate is the failing gate", () => {

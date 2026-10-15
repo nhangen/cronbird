@@ -185,7 +185,7 @@ export function simulateSchedule<T = unknown>(options: SimulateOptions<T>): Simu
     // Only T0 can have missed slots: from then on the simulation itself fires every slot.
     let catches: { job: Job<T>; slot: Date }[] = [];
     if (isFirstTick && Object.keys(lastFired).length > 0) {
-      catches = catchUpFires(runnable, lastFired, cursor, (p) => resolver.resolve(p), (p) => resolveLookback(p, cursor)).filter(
+      catches = catchUpFires(runnable, lastFired, cursor, (p) => resolver.resolve(p), (p) => resolveLookback(p, cursor), matcherFaults).filter(
         (f) => !dueNames.has(f.job.name),
       );
     }

@@ -1140,6 +1140,24 @@ describe("runForever — matcher faults (#72)", () => {
     // No "schedule:" log for an internal fault — it's a matcher fault, not an invalid expression.
     expect(h.logs.filter((l) => l.startsWith("schedule: boom "))).toHaveLength(0);
   });
+
+  test("catch-up reports a matcher fault for the owning job and the tick survives (#74)", async () => {
+    const h = harness({
+      nows: [d("2026-06-01T09:17:30Z")],
+      playbooks: [pb({ name: "boom", cronSchedule: "*/5 * * * *" }), pb({ name: "ok", cronSchedule: "*/5 * * * *" })],
+      startHeartbeat: {
+        ts: 0, host: "ml-1", runnable_count: 0, next_wake_ts: 0, last_dispatch: [], dispatched_minute: {},
+        last_fired: { boom: d("2026-06-01T09:00:00Z").getTime(), ok: d("2026-06-01T09:00:00Z").getTime() },
+        queue: [], running: {}, last_completed: {}, attempts: {}, last_run: {}, last_success: {}, last_success_ts: {},
+      } as unknown as Heartbeat,
+    });
+    h.deps.matcherResolver = boomResolver(h.deps.matcher);
+    await runForever(h.deps);
+    expect(h.dispatched).toEqual(["ok"]);
+    // dueAt (matchesAt) + nextWake (nextFire) + catch-up (nextFire)
+    expect(h.logs.filter((l) => l.startsWith("matcher: internal error for boom "))).toHaveLength(3);
+    expect(h.logs.filter((l) => l.includes("internal error for */5"))).toHaveLength(0);
+  });
 });
 
 describe("run history recording — Ticket #3", () => {

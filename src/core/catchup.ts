@@ -11,6 +11,7 @@
  * minute is deliberately excluded — that is the live dueAt path's responsibility.
  */
 import type { CronMatcher } from "./cron";
+import { classifyMatcherError, type MatcherFaultHandlers } from "./select";
 import type { Job } from "./types";
 
 const MINUTE_MS = 60_000;
@@ -37,6 +38,14 @@ const PERIOD_SAMPLES = 5;
  * replayed (don't run a stale job late at night). Unparseable / single-fire
  * schedules fall back to the floor and never throw.
  *
+ * A matcher fault (invalid schedule, probe exhaustion, an engine failure) is
+ * reported through `handlers` when given and the floor is still returned — the
+ * look-back is only a bound on replay, so a fault must not crash the tick. The
+ * daemon and simulate resolvers leave `handlers` off on purpose: the same
+ * matcher's fault is reported with the real job by {@link catchUpFires},
+ * `dueAt` and `nextWake`, and reporting here too would log it again on every
+ * look-back lookup, including stale-slot eviction (#74).
+ *
  * The min over a fixed sample window is an upper-bound estimate: a schedule
  * whose tightest gap only recurs beyond the window would round *up* toward the
  * cap. That errs conservative — a too-large look-back only ever replays the one
@@ -49,6 +58,7 @@ export function lookbackForSchedule(
   matcher: CronMatcher,
   floorMs: number,
   capMs: number,
+  handlers?: MatcherFaultHandlers,
 ): number {
   let cursor = now;
   let prev: Date | null = null;
@@ -57,7 +67,8 @@ export function lookbackForSchedule(
     let next: Date | null;
     try {
       next = matcher.nextFire(schedule, cursor);
-    } catch {
+    } catch (err) {
+      reportFault(scheduleJob(schedule), err, handlers);
       break;
     }
     if (next === null) break;
@@ -75,7 +86,10 @@ export function lookbackForSchedule(
 /**
  * The newest fire strictly after `lastFired` (clamped to `now - lookbackMs`) and
  * strictly before the start of the minute containing `now`, or `null` if none.
- * An unparseable schedule yields `null` rather than throwing.
+ * An unparseable schedule yields `null` rather than throwing; a matcher fault
+ * (invalid schedule, probe exhaustion, an engine failure) is reported through
+ * `handlers` and likewise yields `null` — the job is dropped for this decision,
+ * exactly as in {@link ./select} (#72, #74).
  */
 export function newestMissedSlot(
   schedule: string,
@@ -83,6 +97,7 @@ export function newestMissedSlot(
   now: Date,
   matcher: CronMatcher,
   lookbackMs: number,
+  handlers?: MatcherFaultHandlers,
 ): Date | null {
   const floor = Math.max(lastFired, now.getTime() - lookbackMs);
   const currentMinuteStart = Math.floor(now.getTime() / MINUTE_MS) * MINUTE_MS;
@@ -94,7 +109,8 @@ export function newestMissedSlot(
     let next: Date | null;
     try {
       next = matcher.nextFire(schedule, cursor);
-    } catch {
+    } catch (err) {
+      reportFault(scheduleJob(schedule), err, handlers);
       return null;
     }
     if (next === null || next.getTime() >= currentMinuteStart) break;
@@ -102,6 +118,23 @@ export function newestMissedSlot(
     cursor = next;
   }
   return newest;
+}
+
+/**
+ * Report a matcher fault the same way {@link ./select} does: invalid schedules
+ * (and invalid timezones) go to `onInvalid`, everything else — probe
+ * exhaustion, an engine failure, an injected matcher throwing — to
+ * `onInternalError`.
+ */
+function reportFault(job: Job<unknown>, err: unknown, handlers?: MatcherFaultHandlers): void {
+  const error = err instanceof Error ? err : new Error(String(err));
+  if (classifyMatcherError(err) === "invalid") handlers?.onInvalid?.(job, error);
+  else handlers?.onInternalError?.(job, error);
+}
+
+/** Stand-in for direct callers of the job-free primitives; {@link catchUpFires} rebinds handlers to the real job. */
+function scheduleJob(schedule: string): Job<unknown> {
+  return { name: schedule, cronSchedule: schedule, isActive: true, hosts: ["*"], scope: "each", metadata: {} };
 }
 
 export interface CatchUpFire<T = unknown> {
@@ -119,6 +152,11 @@ export interface CatchUpFire<T = unknown> {
  * `lookbackFor` resolves each job's look-back from its own schedule:
  * the daemon passes a period-derived resolver ({@link lookbackForSchedule}) or a
  * fixed `() => n` when the host pins the window via the env override.
+ *
+ * Matcher faults are reported against the owning job through `handlers` (see
+ * {@link ./select.MatcherFaultHandlers}) and the job is skipped for this
+ * decision — the same "not due, but not invisible" policy as `dueAt`/`nextWake`
+ * (#72, #74).
  */
 export function catchUpFires<T>(
   jobs: Job<T>[],
@@ -126,12 +164,28 @@ export function catchUpFires<T>(
   now: Date,
   matcherFor: (job: Job<T>) => CronMatcher,
   lookbackFor: (job: Job<T>) => number,
+  handlers?: MatcherFaultHandlers,
 ): CatchUpFire<T>[] {
   const fires: CatchUpFire<T>[] = [];
   for (const p of jobs) {
     const baseline = lastFired[p.name];
     if (baseline === undefined) continue;
-    const slot = newestMissedSlot(p.cronSchedule, baseline, now, matcherFor(p), lookbackFor(p));
+    let matcher: CronMatcher;
+    let lookbackMs: number;
+    try {
+      matcher = matcherFor(p);
+      lookbackMs = lookbackFor(p);
+    } catch (err) {
+      // Injected resolvers (per-timezone matcher creation, period sampling) can
+      // throw for the same reasons the matcher does.
+      reportFault(p, err, handlers);
+      continue;
+    }
+    const jobHandlers: MatcherFaultHandlers | undefined = handlers && {
+      onInvalid: (_stub, error) => handlers.onInvalid?.(p, error),
+      onInternalError: (_stub, error) => handlers.onInternalError?.(p, error),
+    };
+    const slot = newestMissedSlot(p.cronSchedule, baseline, now, matcher, lookbackMs, jobHandlers);
     if (slot !== null) fires.push({ job: p, slot });
   }
   return fires;

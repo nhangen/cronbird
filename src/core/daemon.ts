@@ -259,7 +259,8 @@ export function runOneTick<T>(deps: DaemonDeps<T>, state: TickState<T>, hostReso
   // indistinguishable from "not due" (#72). Either way the job is skipped for
   // this minute — the daemon must not crash the tick over one job. Neither
   // log is deduped: a persistent fault logs from both dueAt and nextWake on
-  // every tick until it is fixed.
+  // every tick until it is fixed. Catch-up reuses the same handlers, so a
+  // fault that skips a job there is logged too — no silent catch-up drop (#74).
   const matcherFaults = {
     onInvalid: (job: Job<unknown>, error: Error) => {
       deps.log(`schedule: ${job.name} has an invalid schedule ${JSON.stringify(job.cronSchedule)}: ${error.message}`);
@@ -276,7 +277,7 @@ export function runOneTick<T>(deps: DaemonDeps<T>, state: TickState<T>, hostReso
     return true;
   });
   const dueNames = new Set(due.map((p) => p.name));
-  const catches = catchUpFires(runnable, state.lastFired, now, (p) => hostResolver.resolve(p), (p) => deps.resolveLookback(p, now)).filter(
+  const catches = catchUpFires(runnable, state.lastFired, now, (p) => hostResolver.resolve(p), (p) => deps.resolveLookback(p, now), matcherFaults).filter(
     (f) => !dueNames.has(f.job.name),
   );
 

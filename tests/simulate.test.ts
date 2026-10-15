@@ -432,6 +432,32 @@ describe("simulateSchedule — skipped-job diagnostics", () => {
     expect(() => runWith(internalOnly("nextFire"))).toThrow(/internal matcher error for boom/);
   });
 
+  test("aborts when only the catch-up matcher call faults (#74)", () => {
+    const baseline = d("2026-06-01T08:30:00Z").getTime();
+    const resolver: JobMatcherResolver = {
+      resolve: () => ({
+        nextFire: (expr, from) => {
+          if (from.getTime() === baseline) throw new Error("engine exploded");
+          return m.nextFire(expr, from);
+        },
+        matchesAt: m.matchesAt.bind(m),
+      }),
+    };
+    expect(() =>
+      simulateSchedule({
+        from: d("2026-06-01T09:00:00Z"),
+        to: d("2026-06-01T10:00:00Z"),
+        host: "ml-1",
+        jobs: [pb({ name: "boom", cronSchedule: "0 9 * * *" })],
+        enabled: new Set(["boom"]),
+        owners: {},
+        matcher: m,
+        matcherResolver: resolver,
+        initialLastFired: { boom: baseline },
+      }),
+    ).toThrow(/internal matcher error for boom.*engine exploded/);
+  });
+
   test("an invalid timezone warns once instead of aborting the run (#72)", () => {
     const resolver: JobMatcherResolver = {
       resolve: () => {
