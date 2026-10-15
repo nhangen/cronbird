@@ -271,15 +271,15 @@ describe("simulateSchedule — core fast-forward engine", () => {
       matcher: createMatcher({ timezone: "America/New_York" }),
     });
 
-    expect(report.dispatches.map((x) => x.timeIso)).toEqual([
-      "2026-11-01T06:10:00.000Z",
-      "2026-11-01T07:00:00.000Z",
-      "2026-11-01T07:01:00.000Z",
-      "2026-11-01T07:02:00.000Z",
-      "2026-11-01T07:03:00.000Z",
-      "2026-11-01T07:04:00.000Z",
-      "2026-11-01T07:05:00.000Z",
-    ]);
+    const expected: string[] = [];
+    for (let m = 10; m <= 59; m++) {
+      expected.push(`2026-11-01T06:${String(m).padStart(2, "0")}:00.000Z`);
+    }
+    for (let m = 0; m <= 5; m++) {
+      expected.push(`2026-11-01T07:${String(m).padStart(2, "0")}:00.000Z`);
+    }
+
+    expect(report.dispatches.map((x) => x.timeIso)).toEqual(expected);
   });
 
   test("throws instead of looping when a matcher's nextFire does not advance past the cursor", () => {
