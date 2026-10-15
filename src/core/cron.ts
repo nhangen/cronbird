@@ -98,13 +98,10 @@ class CronerMatcher implements CronMatcher {
     return earliest;
   }
 
-  nextFire(expr: string, from: Date): Date | null {
-    const cron = this.build(expr);
+  private nextFirstFire(cron: Cron, expr: string, from: Date): Date | null {
     // Inside a DST fall-back hour croner 9.1 can return an instant before `from`,
     // or pick the second occurrence in zones east of UTC.
     // Step past the overlap until it returns a real successor.
-    // Policy: a repeated wall-clock time fires only at its first occurrence, so
-    // nextFire skips the overlap; matchesAt still accepts sub-hourly minutes in it.
     for (let probe = from.getTime(), i = 0; i < MAX_OVERLAP_PROBES; probe += MINUTE_MS, i++) {
       const raw = cron.nextRun(new Date(probe));
       if (raw === null) return null;
@@ -114,21 +111,32 @@ class CronerMatcher implements CronMatcher {
     throw new Error(`cron ${JSON.stringify(expr)}: no fire after ${from.toISOString()} within ${MAX_OVERLAP_PROBES} minutes of probing`);
   }
 
+  nextFire(expr: string, from: Date): Date | null {
+    const cron = this.build(expr);
+    let soonest = this.nextFirstFire(cron, expr, from);
+    if (soonest === null || !this.isSubHourly(expr)) return soonest;
+    if (soonest.getTime() - from.getTime() <= MINUTE_MS) return soonest;
+
+    for (const shiftMs of FALL_BACK_OVERLAPS_MS) {
+      const probeFrom = new Date(from.getTime() - shiftMs);
+      const firstCandidate = this.nextFirstFire(cron, expr, probeFrom);
+      if (firstCandidate === null) continue;
+      const secondCandidate = new Date(firstCandidate.getTime() + shiftMs);
+      if (
+        secondCandidate.getTime() > from.getTime() &&
+        secondCandidate.getTime() < soonest.getTime() &&
+        this.formatter.format(secondCandidate) === this.formatter.format(firstCandidate)
+      ) {
+        soonest = secondCandidate;
+      }
+    }
+    return soonest;
+  }
+
   matchesAt(expr: string, when: Date): boolean {
     const minute = Math.floor(when.getTime() / MINUTE_MS) * MINUTE_MS;
     const next = this.nextFire(expr, new Date(minute - 1));
-    if (next !== null && next.getTime() === minute) return true;
-    // croner maps every probe inside the second occurrence of a fall-back
-    // overlap to the first, so only sub-hourly schedules are re-checked there.
-    if (this.isSubHourly(expr)) {
-      const firstOcc = this.resolveFirstOccurrence(when);
-      if (firstOcc.getTime() !== when.getTime()) {
-        const firstMinute = Math.floor(firstOcc.getTime() / MINUTE_MS) * MINUTE_MS;
-        const probe = this.nextFire(expr, new Date(firstMinute - 1));
-        return probe !== null && probe.getTime() === firstMinute;
-      }
-    }
-    return false;
+    return next !== null && next.getTime() === minute;
   }
 
   /**
