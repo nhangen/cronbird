@@ -82,6 +82,7 @@ class CronerMatcher implements CronMatcher {
     }
   }
 
+  /** Zone offset (local minus UTC) at `date`, in ms, truncated to the second. */
   private getOffsetMs(date: Date): number {
     let year = 0, month = 0, day = 0, hour = 0, minute = 0, second = 0;
     for (const part of this.formatter.formatToParts(date)) {
@@ -91,6 +92,7 @@ class CronerMatcher implements CronMatcher {
         case "day": day = Number(part.value); break;
         case "hour": {
           const h = Number(part.value);
+          // hour12:false can print midnight as "24".
           hour = h === 24 ? 0 : h;
           break;
         }
