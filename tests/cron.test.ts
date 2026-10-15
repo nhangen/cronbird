@@ -261,7 +261,7 @@ describe("DST transitions stay monotonic (no gap stall, no fall-back replay)", (
     const casey = createMatcher({ timezone: "Antarctica/Casey" });
     expect(casey.nextFire("* * * * *", d("2023-03-08T15:59:00Z"))).toEqual(d("2023-03-08T19:00:00Z"));
     expect(casey.nextFire("* * * * *", d("2023-03-08T17:00:00Z"))).toEqual(d("2023-03-08T19:00:00Z"));
-    // Starting at the transition instant needs 179 probes; a cap below that throws.
+    // Starting at the transition instant needs 180 probes; a cap of 179 or less throws.
     expect(casey.nextFire("* * * * *", d("2023-03-08T16:00:00Z"))).toEqual(d("2023-03-08T19:00:00Z"));
   });
 
