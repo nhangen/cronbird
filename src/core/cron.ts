@@ -102,8 +102,6 @@ class CronerMatcher implements CronMatcher {
     // Inside a DST fall-back hour croner 9.1 can return an instant before `from`,
     // or pick the second occurrence in zones east of UTC.
     // Step past the overlap until it returns a real successor.
-    // Policy: wall-clock-specific schedules fire only at their first occurrence;
-    // sub-hourly schedules keep firing through the second occurrence in real time.
     for (let probe = from.getTime(), i = 0; i < MAX_OVERLAP_PROBES; probe += MINUTE_MS, i++) {
       const raw = cron.nextRun(new Date(probe));
       if (raw === null) return null;
