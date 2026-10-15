@@ -261,6 +261,14 @@ describe("DST transitions stay monotonic (no gap stall, no fall-back replay)", (
     const casey = createMatcher({ timezone: "Antarctica/Casey" });
     expect(casey.nextFire("* * * * *", d("2023-03-08T15:59:00Z"))).toEqual(d("2023-03-08T19:00:00Z"));
     expect(casey.nextFire("* * * * *", d("2023-03-08T17:00:00Z"))).toEqual(d("2023-03-08T19:00:00Z"));
+    // Starting at the transition instant needs 179 probes; a cap below that throws.
+    expect(casey.nextFire("* * * * *", d("2023-03-08T16:00:00Z"))).toEqual(d("2023-03-08T19:00:00Z"));
+  });
+
+  test("fall-back with a 3-hour overlap (Antarctica/Casey): instants after the overlap are not rewritten", () => {
+    const casey = createMatcher({ timezone: "Antarctica/Casey" });
+    expect(casey.matchesAt("0 4 * * *", d("2023-03-08T20:00:00Z"))).toBe(true);
+    expect(casey.nextFire("0 4 * * *", d("2023-03-08T19:30:00Z"))).toEqual(d("2023-03-08T20:00:00Z"));
   });
 
   test("fall-back: matchesAt returns true for first occurrence and false for second across zones", () => {
@@ -316,6 +324,7 @@ describe("DST transitions stay monotonic (no gap stall, no fall-back replay)", (
     expect(troll.matchesAt("*/10 * * * *", d("2026-10-25T01:30:00Z"))).toBe(true);
     expect(troll.matchesAt("*/10 * * * *", d("2026-10-25T01:35:00Z"))).toBe(false);
     const casey = createMatcher({ timezone: "Antarctica/Casey" });
+    expect(casey.matchesAt("*/10 * * * *", d("2023-03-08T14:30:00Z"))).toBe(true);
     expect(casey.matchesAt("*/10 * * * *", d("2023-03-08T17:30:00Z"))).toBe(true);
     expect(casey.matchesAt("*/10 * * * *", d("2023-03-08T17:35:00Z"))).toBe(false);
   });
