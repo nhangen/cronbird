@@ -257,6 +257,12 @@ describe("DST transitions stay monotonic (no gap stall, no fall-back replay)", (
     expect(casey.matchesAt("30 1 * * *", d("2023-03-08T17:30:00Z"))).toBe(false);
   });
 
+  test("fall-back with a 3-hour overlap (Antarctica/Casey): every-minute schedule skips the second occurrence", () => {
+    const casey = createMatcher({ timezone: "Antarctica/Casey" });
+    expect(casey.nextFire("* * * * *", d("2023-03-08T15:59:00Z"))).toEqual(d("2023-03-08T19:00:00Z"));
+    expect(casey.nextFire("* * * * *", d("2023-03-08T17:00:00Z"))).toEqual(d("2023-03-08T19:00:00Z"));
+  });
+
   test("fall-back: matchesAt returns true for first occurrence and false for second across zones", () => {
     // West of UTC (America/New_York)
     expect(ny.matchesAt("30 1 * * *", d("2026-11-01T05:30:00Z"))).toBe(true);  // first (EDT)

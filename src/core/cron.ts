@@ -85,14 +85,17 @@ class CronerMatcher implements CronMatcher {
   private getOffsetMs(date: Date): number {
     let year = 0, month = 0, day = 0, hour = 0, minute = 0, second = 0;
     for (const part of this.formatter.formatToParts(date)) {
-      const v = Number(part.value);
       switch (part.type) {
-        case "year": year = v; break;
-        case "month": month = v; break;
-        case "day": day = v; break;
-        case "hour": hour = v === 24 ? 0 : v; break;
-        case "minute": minute = v; break;
-        case "second": second = v; break;
+        case "year": year = Number(part.value); break;
+        case "month": month = Number(part.value); break;
+        case "day": day = Number(part.value); break;
+        case "hour": {
+          const h = Number(part.value);
+          hour = h === 24 ? 0 : h;
+          break;
+        }
+        case "minute": minute = Number(part.value); break;
+        case "second": second = Number(part.value); break;
       }
     }
     return Date.UTC(year, month - 1, day, hour, minute, second) - (date.getTime() - date.getUTCMilliseconds());
