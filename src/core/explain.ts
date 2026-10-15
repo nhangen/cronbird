@@ -7,9 +7,9 @@
  * then asks this module to explain a single job's gating. No I/O and no
  * scheduling — same discipline as {@link ./select} and {@link ./status}.
  */
-import { CronExpressionError, type CronMatcher } from "./cron";
 import { mergeRunRecords } from "./history";
-import { selectRunnable } from "./select";
+import { classifyMatcherError, selectRunnable } from "./select";
+import type { CronMatcher } from "./cron";
 import type { Heartbeat, Job, RunRecord } from "./types";
 
 /** A single gate the job must pass to be runnable on this host, with the
@@ -44,8 +44,10 @@ export interface ExplainReport {
   /** True when the `cronSchedule` parses. Distinct from "runnable": a
    *  runnable job with an invalid schedule never fires. */
   scheduleValid: boolean;
-  /** Why the schedule is invalid ("cronSchedule is blank" or the parser's
-   *  message), or null when it parses. */
+  /** Why the schedule is invalid ("cronSchedule is blank", the parser's
+   *  message, or an invalid timezone), or null when it parses. Operator-fixable
+   *  matcher faults are reported here as `scheduleError`; unexpected matcher
+   *  errors (probe exhaustion, engine failures) still propagate. */
   scheduleError: string | null;
   /** Epoch ms of the newest recorded fire: heartbeat `last_fired`, else the
    *  newest run-history slot (same fallback as {@link JobStatus.lastFired}), or null. */
@@ -154,8 +156,11 @@ export function explainJob<T>(args: {
     try {
       matcher.nextFire(job.cronSchedule, now);
     } catch (e) {
-      if (!(e instanceof CronExpressionError)) throw e;
-      scheduleError = e.message;
+      // Operator-fixable faults (invalid schedule, invalid timezone) are
+      // reported as scheduleError; only unexpected matcher errors propagate
+      // (reuses classifyMatcherError so explain can't drift from select.ts — #74).
+      if (classifyMatcherError(e) === "internal") throw e instanceof Error ? e : new Error(String(e));
+      scheduleError = e instanceof Error ? e.message : String(e);
     }
   }
   const scheduleValid = scheduleError === null;

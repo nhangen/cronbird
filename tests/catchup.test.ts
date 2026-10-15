@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { catchUpFires, lookbackForSchedule, newestMissedSlot } from "../src/core/catchup";
-import { createMatcher, matcherForJob } from "../src/core/cron";
+import { createMatcher, InvalidTimezoneError, matcherForJob } from "../src/core/cron";
+import type { MatcherFaultHandlers } from "../src/core/select";
 import type { Job } from "../src/core/types";
 
 const m = createMatcher({ timezone: "UTC" });
@@ -62,6 +63,27 @@ describe("newestMissedSlot", () => {
     expect(newestMissedSlot("not a cron", ms("2026-06-01T09:00:00Z"), d("2026-06-01T09:30:00Z"), m, HOUR)).toBeNull();
   });
 
+  test("matcher fault → null (job dropped) AND reported through the handler (#74)", () => {
+    const seen: string[] = [];
+    const handlers: MatcherFaultHandlers = {
+      onInvalid: (_job, error) => seen.push(`invalid: ${error.message}`),
+      onInternalError: (_job, error) => seen.push(`internal: ${error.message}`),
+    };
+    // Invalid schedule: reported as onInvalid, still null.
+    expect(newestMissedSlot("not a cron", ms("2026-06-01T09:00:00Z"), d("2026-06-01T09:30:00Z"), m, HOUR, handlers)).toBeNull();
+    expect(seen.length).toBe(1);
+    expect(seen[0]).toContain("invalid cron expression");
+
+    // Probe-exhaustion / engine failure: reported as onInternalError, still null.
+    const probeExhausted = {
+      nextFire: () => { throw new Error("no fire after 2026-06-01T09:00:00.000Z within 180 minutes of probing"); },
+      matchesAt: () => false,
+    };
+    expect(newestMissedSlot("*/5 * * * *", ms("2026-06-01T09:00:00Z"), d("2026-06-01T09:30:00Z"), probeExhausted, HOUR, handlers)).toBeNull();
+    expect(seen.length).toBe(2);
+    expect(seen[1]).toContain("internal");
+  });
+
   test("backward-DST (fall-back) stays monotonic and replays a real prior slot", () => {
     const ny = createMatcher({ timezone: "America/New_York" });
     // 2026-11-01 fall-back. Hourly. Down since 04:00Z, back at 07:30Z.
@@ -118,6 +140,21 @@ describe("lookbackForSchedule", () => {
   test("unparseable schedule falls back to the floor (never throws)", () => {
     expect(lookbackForSchedule("not a cron", now, m, FLOOR, CAP)).toBe(FLOOR);
   });
+
+  test("matcher fault → floor, reported through the handler (#74)", () => {
+    const seen: string[] = [];
+    const handlers: MatcherFaultHandlers = {
+      onInvalid: (_job, error) => seen.push(`invalid: ${error.message}`),
+      onInternalError: (_job, error) => seen.push(`internal: ${error.message}`),
+    };
+    expect(lookbackForSchedule("not a cron", now, m, FLOOR, CAP, handlers)).toBe(FLOOR);
+    expect(seen).toEqual([expect.stringContaining("invalid cron expression")]);
+
+    const probeExhausted = { nextFire: () => { throw new Error("probe exhausted"); }, matchesAt: () => false };
+    expect(lookbackForSchedule("*/5 * * * *", now, probeExhausted, FLOOR, CAP, handlers)).toBe(FLOOR);
+    expect(seen.length).toBe(2);
+    expect(seen[1]).toContain("internal");
+  });
 });
 
 describe("catchUpFires", () => {
@@ -145,7 +182,38 @@ describe("catchUpFires", () => {
     expect(catchUpFires([daily], lastFired, now, mf, derived).map((f) => f.slot)).toEqual([
       d("2026-06-01T09:00:00Z"),
     ]);
+    expect(catchUpFires([daily], lastFired, now, mf, derived).map((f) => f.slot)).toEqual([
+      d("2026-06-01T09:00:00Z"),
+    ]);
     // The same slot is 3h stale → a fixed 1h look-back drops it.
     expect(catchUpFires([daily], lastFired, now, mf, fixedHour)).toEqual([]);
+  });
+
+  test("catchUpFires surfaces per-job faults through the handler and skips the job (#74)", () => {
+    const seen: string[] = [];
+    const handlers: MatcherFaultHandlers = {
+      onInvalid: (job, error) => seen.push(`${job.name} invalid: ${error.message}`),
+      onInternalError: (job, error) => seen.push(`${job.name} internal: ${error.message}`),
+    };
+    const now = d("2026-06-01T09:30:00Z");
+    const lastFired = { bad: ms("2026-06-01T09:00:00Z"), broken: ms("2026-06-01T09:00:00Z") };
+    const pbs = [pb({ name: "bad", cronSchedule: "not a cron" }), pb({ name: "broken" })];
+
+    // Invalid schedule → onInvalid for that job; a throwing resolver (engine
+    // failure, e.g. InvalidTimezoneError from per-timezone matcher creation) → onInternalError.
+    const brokenResolver: (job: Job<unknown>) => { nextFire: (e: string, f: Date) => Date | null; matchesAt: (e: string, w: Date) => boolean } = (job) =>
+      job.name === "broken"
+        ? { nextFire: () => { throw new InvalidTimezoneError("Mars/Phobos"); }, matchesAt: () => false }
+        : m;
+
+    const fires = catchUpFires(pbs, lastFired, now, brokenResolver, fixedHour, handlers);
+    expect(fires).toEqual([]);
+    // "bad" fails inside newestMissedSlot → reportFault uses the schedule string as job name.
+    // "broken" fails inside newestMissedSlot too (InvalidTimezoneError) → same path.
+    expect(seen.length).toBe(2);
+    expect(seen[0]).toContain("not a cron");   // schedule of "bad"
+    expect(seen[0]).toContain("invalid cron expression");
+    expect(seen[1]).toContain("Mars/Phobos");  // InvalidTimezoneError message
+    expect(seen[1]).toContain("invalid timezone");
   });
 });
