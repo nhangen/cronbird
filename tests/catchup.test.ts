@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { catchUpFires, lookbackForSchedule, newestMissedSlot } from "../src/core/catchup";
-import { createMatcher, InvalidTimezoneError, matcherForJob } from "../src/core/cron";
+import { createMatcher, InvalidTimezoneError, matcherForJob, type CronMatcher } from "../src/core/cron";
 import type { MatcherFaultHandlers } from "../src/core/select";
 import type { Job } from "../src/core/types";
 
@@ -182,38 +182,75 @@ describe("catchUpFires", () => {
     expect(catchUpFires([daily], lastFired, now, mf, derived).map((f) => f.slot)).toEqual([
       d("2026-06-01T09:00:00Z"),
     ]);
-    expect(catchUpFires([daily], lastFired, now, mf, derived).map((f) => f.slot)).toEqual([
-      d("2026-06-01T09:00:00Z"),
-    ]);
     // The same slot is 3h stale → a fixed 1h look-back drops it.
     expect(catchUpFires([daily], lastFired, now, mf, fixedHour)).toEqual([]);
   });
 
-  test("catchUpFires surfaces per-job faults through the handler and skips the job (#74)", () => {
-    const seen: string[] = [];
-    const handlers: MatcherFaultHandlers = {
-      onInvalid: (job, error) => seen.push(`${job.name} invalid: ${error.message}`),
-      onInternalError: (job, error) => seen.push(`${job.name} internal: ${error.message}`),
+  describe("matcher faults (#74)", () => {
+    const collect = () => {
+      const seen: string[] = [];
+      const handlers: MatcherFaultHandlers = {
+        onInvalid: (job, error) => seen.push(`${job.name} invalid: ${error.message}`),
+        onInternalError: (job, error) => seen.push(`${job.name} internal: ${error.message}`),
+      };
+      return { seen, handlers };
     };
     const now = d("2026-06-01T09:30:00Z");
-    const lastFired = { bad: ms("2026-06-01T09:00:00Z"), broken: ms("2026-06-01T09:00:00Z") };
-    const pbs = [pb({ name: "bad", cronSchedule: "not a cron" }), pb({ name: "broken" })];
+    const baseline = ms("2026-06-01T09:00:00Z");
+    const throwing = (err: Error) => ({ nextFire: () => { throw err; }, matchesAt: () => false });
 
-    // Invalid schedule → onInvalid for that job; a throwing resolver (engine
-    // failure, e.g. InvalidTimezoneError from per-timezone matcher creation) → onInternalError.
-    const brokenResolver: (job: Job<unknown>) => { nextFire: (e: string, f: Date) => Date | null; matchesAt: (e: string, w: Date) => boolean } = (job) =>
-      job.name === "broken"
-        ? { nextFire: () => { throw new InvalidTimezoneError("Mars/Phobos"); }, matchesAt: () => false }
-        : m;
+    test("a fault inside the matcher is reported against the real job, not the schedule", () => {
+      const { seen, handlers } = collect();
+      const pbs = [pb({ name: "bad", cronSchedule: "not a cron" }), pb({ name: "broken" })];
+      const resolver = (job: Job<unknown>) => (job.name === "broken" ? throwing(new Error("probe exhausted")) : m);
+      const fires = catchUpFires(pbs, { bad: baseline, broken: baseline }, now, resolver, fixedHour, handlers);
+      expect(fires).toEqual([]);
+      expect(seen).toEqual([
+        expect.stringMatching(/^bad invalid: .*invalid cron expression/),
+        "broken internal: probe exhausted",
+      ]);
+    });
 
-    const fires = catchUpFires(pbs, lastFired, now, brokenResolver, fixedHour, handlers);
-    expect(fires).toEqual([]);
-    // "bad" fails inside newestMissedSlot → reportFault uses the schedule string as job name.
-    // "broken" fails inside newestMissedSlot too (InvalidTimezoneError) → same path.
-    expect(seen.length).toBe(2);
-    expect(seen[0]).toContain("not a cron");   // schedule of "bad"
-    expect(seen[0]).toContain("invalid cron expression");
-    expect(seen[1]).toContain("Mars/Phobos");  // InvalidTimezoneError message
-    expect(seen[1]).toContain("invalid timezone");
+    test("a throwing resolver is classified: invalid timezone -> onInvalid, anything else -> onInternalError", () => {
+      const { seen, handlers } = collect();
+      const pbs = [pb({ name: "tz" }), pb({ name: "eng" })];
+      const resolver = (job: Job<unknown>): CronMatcher => {
+        throw job.name === "tz" ? new InvalidTimezoneError("Mars/Phobos") : new Error("engine exploded");
+      };
+      expect(catchUpFires(pbs, { tz: baseline, eng: baseline }, now, resolver, fixedHour, handlers)).toEqual([]);
+      expect(seen).toEqual([expect.stringMatching(/^tz invalid: .*Mars\/Phobos/), "eng internal: engine exploded"]);
+    });
+
+    test("a throwing lookback resolver is reported and the next job still catches up", () => {
+      const { seen, handlers } = collect();
+      const pbs = [pb({ name: "a" }), pb({ name: "b" })];
+      const lookback = (job: Job<unknown>) => {
+        if (job.name === "a") throw new Error("lookback exploded");
+        return HOUR;
+      };
+      const fires = catchUpFires(pbs, { a: baseline, b: baseline }, now, mf, lookback, handlers);
+      expect(seen).toEqual(["a internal: lookback exploded"]);
+      expect(fires.map((f) => f.job.name)).toEqual(["b"]);
+    });
+
+    test("a handler that throws is not reported a second time", () => {
+      const calls: string[] = [];
+      const handlers: MatcherFaultHandlers = {
+        onInternalError: (job, error) => {
+          calls.push(job.name);
+          throw new Error(`abort: ${error.message}`);
+        },
+      };
+      const resolver = () => throwing(new Error("probe exhausted"));
+      expect(() => catchUpFires([pb({ name: "boom" })], { boom: baseline }, now, resolver, fixedHour, handlers)).toThrow(
+        "abort: probe exhausted",
+      );
+      expect(calls).toEqual(["boom"]);
+    });
+
+    test("no handlers: the faulting job is skipped without throwing", () => {
+      const resolver = () => throwing(new Error("probe exhausted"));
+      expect(catchUpFires([pb({ name: "boom" })], { boom: baseline }, now, resolver, fixedHour)).toEqual([]);
+    });
   });
 });
