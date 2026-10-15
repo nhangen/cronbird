@@ -11,6 +11,7 @@
  * minute is deliberately excluded — that is the live dueAt path's responsibility.
  */
 import type { CronMatcher } from "./cron";
+import { type MatcherFaultHandlers } from "./select";
 import type { Job } from "./types";
 /**
  * A per-schedule catch-up look-back derived from the schedule's own cadence,
@@ -30,19 +31,30 @@ import type { Job } from "./types";
  * replayed (don't run a stale job late at night). Unparseable / single-fire
  * schedules fall back to the floor and never throw.
  *
+ * A matcher fault (invalid schedule, probe exhaustion, an engine failure) is
+ * reported through `handlers` when given and the floor is still returned — the
+ * look-back is only a bound on replay, so a fault must not crash the tick. The
+ * daemon and simulate resolvers leave `handlers` off on purpose: the same
+ * matcher's fault is reported with the real job by {@link catchUpFires},
+ * `dueAt` and `nextWake`, and reporting here too would log it again on every
+ * look-back lookup, including stale-slot eviction (#74).
+ *
  * The min over a fixed sample window is an upper-bound estimate: a schedule
  * whose tightest gap only recurs beyond the window would round *up* toward the
  * cap. That errs conservative — a too-large look-back only ever replays the one
  * already-newest slot once (newest-slot semantics) and is still clamped to the
  * cap — so under-sampling can't cause a replay storm.
  */
-export declare function lookbackForSchedule(schedule: string, now: Date, matcher: CronMatcher, floorMs: number, capMs: number): number;
+export declare function lookbackForSchedule(schedule: string, now: Date, matcher: CronMatcher, floorMs: number, capMs: number, handlers?: MatcherFaultHandlers): number;
 /**
  * The newest fire strictly after `lastFired` (clamped to `now - lookbackMs`) and
  * strictly before the start of the minute containing `now`, or `null` if none.
- * An unparseable schedule yields `null` rather than throwing.
+ * An unparseable schedule yields `null` rather than throwing; a matcher fault
+ * (invalid schedule, probe exhaustion, an engine failure) is reported through
+ * `handlers` and likewise yields `null` — the job is dropped for this decision,
+ * exactly as in {@link ./select} (#72, #74).
  */
-export declare function newestMissedSlot(schedule: string, lastFired: number, now: Date, matcher: CronMatcher, lookbackMs: number): Date | null;
+export declare function newestMissedSlot(schedule: string, lastFired: number, now: Date, matcher: CronMatcher, lookbackMs: number, handlers?: MatcherFaultHandlers): Date | null;
 export interface CatchUpFire<T = unknown> {
     job: Job<T>;
     slot: Date;
@@ -57,5 +69,10 @@ export interface CatchUpFire<T = unknown> {
  * `lookbackFor` resolves each job's look-back from its own schedule:
  * the daemon passes a period-derived resolver ({@link lookbackForSchedule}) or a
  * fixed `() => n` when the host pins the window via the env override.
+ *
+ * Matcher faults are reported against the owning job through `handlers` (see
+ * {@link ./select.MatcherFaultHandlers}) and the job is skipped for this
+ * decision — the same "not due, but not invisible" policy as `dueAt`/`nextWake`
+ * (#72, #74).
  */
-export declare function catchUpFires<T>(jobs: Job<T>[], lastFired: Record<string, number>, now: Date, matcherFor: (job: Job<T>) => CronMatcher, lookbackFor: (job: Job<T>) => number): CatchUpFire<T>[];
+export declare function catchUpFires<T>(jobs: Job<T>[], lastFired: Record<string, number>, now: Date, matcherFor: (job: Job<T>) => CronMatcher, lookbackFor: (job: Job<T>) => number, handlers?: MatcherFaultHandlers): CatchUpFire<T>[];
