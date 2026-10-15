@@ -44,11 +44,9 @@ export interface MatcherOptions {
 }
 
 const MINUTE_MS = 60_000;
-// Longest current DST overlap is two hours (Antarctica/Troll); the cap leaves slack.
-const MAX_OVERLAP_PROBES = 3 * 60;
-// Fall-back overlap lengths in current tzdata (Troll 2h, most zones 1h, Lord_Howe 30m).
-// Historical 3-hour overlaps (Antarctica/Casey 2018–2023) are not matched.
-const FALL_BACK_OVERLAPS_MS = [120 * MINUTE_MS, 60 * MINUTE_MS, 30 * MINUTE_MS];
+const DAY_MS = 24 * 60 * MINUTE_MS;
+// Longest supported DST overlap is three hours (Antarctica/Casey 2018–2023); the cap leaves slack.
+const MAX_OVERLAP_PROBES = 4 * 60;
 
 class CronerMatcher implements CronMatcher {
   private readonly formatter: Intl.DateTimeFormat;
@@ -84,18 +82,32 @@ class CronerMatcher implements CronMatcher {
     }
   }
 
-  private resolveFirstOccurrence(date: Date): Date {
-    const targetLocal = this.formatter.format(date);
-    let earliest = date;
-    for (const shiftMs of FALL_BACK_OVERLAPS_MS) {
-      const candidate = new Date(date.getTime() - shiftMs);
-      if (this.formatter.format(candidate) === targetLocal) {
-        if (candidate.getTime() < earliest.getTime()) {
-          earliest = candidate;
-        }
+  private getOffsetMs(date: Date): number {
+    let year = 0, month = 0, day = 0, hour = 0, minute = 0, second = 0;
+    for (const part of this.formatter.formatToParts(date)) {
+      const v = Number(part.value);
+      switch (part.type) {
+        case "year": year = v; break;
+        case "month": month = v; break;
+        case "day": day = v; break;
+        case "hour": hour = v === 24 ? 0 : v; break;
+        case "minute": minute = v; break;
+        case "second": second = v; break;
       }
     }
-    return earliest;
+    return Date.UTC(year, month - 1, day, hour, minute, second) - (date.getTime() - date.getUTCMilliseconds());
+  }
+
+  private resolveFirstOccurrence(date: Date): Date {
+    const prevDay = new Date(date.getTime() - DAY_MS);
+    const shiftMs = this.getOffsetMs(prevDay) - this.getOffsetMs(date);
+    if (shiftMs > 0) {
+      const candidate = new Date(date.getTime() - shiftMs);
+      if (this.formatter.format(candidate) === this.formatter.format(date)) {
+        return candidate;
+      }
+    }
+    return date;
   }
 
   nextFire(expr: string, from: Date): Date | null {
