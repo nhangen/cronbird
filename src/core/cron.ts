@@ -47,6 +47,8 @@ const MINUTE_MS = 60_000;
 const DAY_MS = 24 * 60 * MINUTE_MS;
 // Longest supported DST overlap is three hours (Antarctica/Casey 2018–2023); the cap leaves slack.
 const MAX_OVERLAP_PROBES = 4 * 60;
+// Fall-back overlap lengths: Casey 3h (2018-2023), Troll 2h, most zones 1h, Lord_Howe 30m.
+const FALL_BACK_OVERLAPS_MS = [180 * MINUTE_MS, 120 * MINUTE_MS, 60 * MINUTE_MS, 30 * MINUTE_MS];
 
 class CronerMatcher implements CronMatcher {
   private readonly formatter: Intl.DateTimeFormat;
