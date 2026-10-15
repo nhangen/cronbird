@@ -41,9 +41,10 @@ const PERIOD_SAMPLES = 5;
  * A matcher fault (invalid schedule, probe exhaustion, an engine failure) is
  * reported through `handlers` when given and the floor is still returned — the
  * look-back is only a bound on replay, so a fault must not crash the tick. The
- * daemon and simulate resolvers leave `handlers` off on purpose: the same fault
- * is reported with the real job by {@link catchUpFires}, and reporting here too
- * would log it again on every look-back lookup (#74).
+ * daemon and simulate resolvers leave `handlers` off on purpose: the same
+ * matcher's fault is reported with the real job by {@link catchUpFires},
+ * `dueAt` and `nextWake`, and reporting here too would log it again on every
+ * look-back lookup, including stale-slot eviction (#74).
  *
  * The min over a fixed sample window is an upper-bound estimate: a schedule
  * whose tightest gap only recurs beyond the window would round *up* toward the
