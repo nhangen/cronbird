@@ -49,6 +49,7 @@ const DAY_MS = 24 * 60 * MINUTE_MS;
 const MAX_OVERLAP_PROBES = 4 * 60;
 // Fall-back overlap lengths: Casey 3h (2018-2023), Troll 2h, most zones 1h, Lord_Howe 30m.
 const FALL_BACK_OVERLAPS_MS = [180 * MINUTE_MS, 120 * MINUTE_MS, 60 * MINUTE_MS, 30 * MINUTE_MS];
+const MAX_FALL_BACK_OVERLAP_MS = Math.max(...FALL_BACK_OVERLAPS_MS);
 
 class CronerMatcher implements CronMatcher {
   private readonly formatter: Intl.DateTimeFormat;
@@ -118,15 +119,17 @@ class CronerMatcher implements CronMatcher {
   }
 
   /**
-   * Whether `from` or `soonest` is near a UTC-offset change in this zone.
-   * On days without a DST transition the zone offset is constant across
-   * the probe window, so the fall-back shift loop can never discover a
-   * second-occurrence candidate.
+   * Whether the zone's UTC offset changes within the longest overlap of `from`,
+   * the only window in which the fall-back shift loop can find a second occurrence.
+   * `soonest` caps the forward look so a far-off result cannot hide a transition
+   * that sits just after `from` behind an offset that has since returned.
    */
   private nearOffsetChange(from: Date, soonest: Date): boolean {
     const fromOffset = this.getOffsetMs(from);
-    if (fromOffset !== this.getOffsetMs(soonest)) return true;
-    return fromOffset !== this.getOffsetMs(new Date(from.getTime() - DAY_MS));
+    const before = new Date(from.getTime() - MAX_FALL_BACK_OVERLAP_MS);
+    if (fromOffset !== this.getOffsetMs(before)) return true;
+    const after = new Date(Math.min(soonest.getTime(), from.getTime() + MAX_FALL_BACK_OVERLAP_MS));
+    return fromOffset !== this.getOffsetMs(after);
   }
 
   private nextFirstFire(cron: Cron, expr: string, from: Date): Date | null {

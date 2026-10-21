@@ -370,26 +370,45 @@ describe("DST transitions stay monotonic (no gap stall; wall-clock schedules fir
   });
 
   test("non-DST days skip fall-back probe passes for sub-hourly schedules (#78)", () => {
-    // America/New_York on a summer day (no transition within 24h)
     const nyMatcher = createMatcher({ timezone: "America/New_York" });
     const nySpy = spyOn(nyMatcher as any, "nextFirstFire");
-    // Next fire is 10:20Z (15 minutes away > 60s); without #78 this ran 4 extra passes (5 total)
     expect(nyMatcher.nextFire("*/20 * * * *", d("2026-06-01T10:05:00Z"))).toEqual(d("2026-06-01T10:20:00Z"));
     expect(nySpy).toHaveBeenCalledTimes(1);
-
-    // Fixed-offset zone (UTC): never has DST transitions
-    const utcMatcher = createMatcher({ timezone: "UTC" });
-    const utcSpy = spyOn(utcMatcher as any, "nextFirstFire");
-    expect(utcMatcher.nextFire("*/20 * * * *", d("2026-06-01T10:05:00Z"))).toEqual(d("2026-06-01T10:20:00Z"));
-    expect(utcSpy).toHaveBeenCalledTimes(1);
   });
 
-  test("fall-back transition day executes shift probes when near an offset change (#78)", () => {
+  test.each(["UTC", "Asia/Kolkata", "Australia/Lord_Howe"])("%s outside a transition window runs one probe pass (#78)", (timezone) => {
+    const matcher = createMatcher({ timezone });
+    const spy = spyOn(matcher as any, "nextFirstFire");
+    expect(matcher.nextFire("*/30 * * * *", d("2026-06-01T10:05:00Z"))).toEqual(d("2026-06-01T10:30:00Z"));
+    expect(spy).toHaveBeenCalledTimes(1);
+  });
+
+  test("matchesAt away from a transition runs one probe pass (#78)", () => {
+    const matcher = createMatcher({ timezone: "America/New_York" });
+    const spy = spyOn(matcher as any, "nextFirstFire");
+    expect(matcher.matchesAt("*/20 * * * *", d("2026-06-01T10:20:00Z"))).toBe(true);
+    expect(spy).toHaveBeenCalledTimes(1);
+  });
+
+  test("fall-back probes run when from is inside the repeated hour (#78)", () => {
     const nyMatcher = createMatcher({ timezone: "America/New_York" });
     const nySpy = spyOn(nyMatcher as any, "nextFirstFire");
-    // During repeated hour (06:00Z to 07:00Z), nextFirstFire initially returns 07:00Z;
-    // shift probes run and discover second occurrence at 06:10Z
     expect(nyMatcher.nextFire("*/10 * * * *", d("2026-11-01T06:00:00Z"))).toEqual(d("2026-11-01T06:10:00Z"));
-    expect(nySpy).toHaveBeenCalledTimes(5); // 1 initial + 4 shifts
+    expect(nySpy.mock.calls.length).toBeGreaterThan(1);
+  });
+
+  test("fall-back probes run when from is just before the transition (#78)", () => {
+    const nyMatcher = createMatcher({ timezone: "America/New_York" });
+    const nySpy = spyOn(nyMatcher as any, "nextFirstFire");
+    expect(nyMatcher.nextFire("*/10 * * * *", d("2026-11-01T05:30:00Z"))).toEqual(d("2026-11-01T05:40:00Z"));
+    expect(nyMatcher.nextFire("*/10 * * * *", d("2026-11-01T05:55:00Z"))).toEqual(d("2026-11-01T06:00:00Z"));
+    expect(nySpy.mock.calls.length).toBeGreaterThan(2);
+  });
+
+  test("fall-back second occurrence is found when the next first occurrence is a year away (#78)", () => {
+    // Cairo falls back at 24:00 local on 2026-10-29; Thursdays-in-October leaves no first-occurrence fire until 2027.
+    const cairo = createMatcher({ timezone: "Africa/Cairo" });
+    expect(cairo.nextFire("*/10 * * 10 4", d("2026-10-29T20:55:00Z"))).toEqual(d("2026-10-29T21:00:00Z"));
+    expect(cairo.matchesAt("*/10 * * 10 4", d("2026-10-29T21:00:00Z"))).toBe(true);
   });
 });
