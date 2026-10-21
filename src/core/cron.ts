@@ -117,6 +117,18 @@ class CronerMatcher implements CronMatcher {
     return date;
   }
 
+  /**
+   * Whether `from` or `soonest` is near a UTC-offset change in this zone.
+   * On days without a DST transition the zone offset is constant across
+   * the probe window, so the fall-back shift loop can never discover a
+   * second-occurrence candidate.
+   */
+  private nearOffsetChange(from: Date, soonest: Date): boolean {
+    const fromOffset = this.getOffsetMs(from);
+    if (fromOffset !== this.getOffsetMs(soonest)) return true;
+    return fromOffset !== this.getOffsetMs(new Date(from.getTime() - DAY_MS));
+  }
+
   private nextFirstFire(cron: Cron, expr: string, from: Date): Date | null {
     // Inside a DST fall-back hour croner 9.1 can return an instant before `from`,
     // or pick the second occurrence in zones east of UTC.
@@ -135,6 +147,7 @@ class CronerMatcher implements CronMatcher {
     let soonest = this.nextFirstFire(cron, expr, from);
     if (soonest === null || !this.isSubHourly(expr)) return soonest;
     if (soonest.getTime() - from.getTime() <= MINUTE_MS) return soonest;
+    if (!this.nearOffsetChange(from, soonest)) return soonest;
 
     for (const shiftMs of FALL_BACK_OVERLAPS_MS) {
       const probeFrom = new Date(from.getTime() - shiftMs);
